@@ -1,0 +1,30 @@
+{
+    "name": "peopleinside/fla-polling",
+    "description": "Lightweight real-time polling for Flarum 2.0 - No WebSocket, No SSH required",
+    "type": "flarum-extension",
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "PeopleInside",
+        }
+    ],
+    "require": {
+        "flarum/core": "^2.0"
+    },
+    "autoload": {
+        "psr-4": {
+            "PeopleInside\\FlaPolling\\": "src/"
+        }
+    },
+    "extra": {
+        "flarum-extension": {
+            "title": "FLA Polling",
+            "category": "feature",
+            "icon": {
+                "name": "fas fa-sync-alt",
+                "backgroundColor": "#4a90e2",
+                "color": "#fff"
+            }
+        }
+    }
+}
