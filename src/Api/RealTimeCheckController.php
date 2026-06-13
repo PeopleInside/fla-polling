@@ -3,6 +3,7 @@
 namespace PeopleInside\FlaPolling\Api;
 
 use Flarum\Discussion\Discussion;
+use Flarum\Post\Post;
 use Flarum\Notification\Notification;
 use Flarum\Http\RequestUtil;
 use Psr\Http\Message\ResponseInterface;
@@ -12,36 +13,33 @@ use Laminas\Diactoros\Response\JsonResponse;
 
 /**
  * Secure controller for real-time polling
- * Includes rate limiting and permission checks
+ * Checks for new discussions, new posts, and notifications
  */
 class RealTimeCheckController implements RequestHandlerInterface
 {
-    /**
-     * Handle the request and return a response
-     */
     public function handle(ServerRequestInterface $request): ResponseInterface
     {
         $actor = RequestUtil::getActor($request);
 
-        // SECURITY: Only allow authenticated users
+        // Only allow authenticated users
         if (!$actor->exists) {
             return new JsonResponse([
                 'error' => 'Unauthorized',
                 'latestDiscussionId' => 0,
+                'latestPostId' => 0,
                 'unreadNotifications' => 0
             ], 401);
         }
 
-        // SECURITY: Rate limiting - check session for last request time
+        // Rate limiting
         $session = $request->getAttribute('session');
         $lastRequest = $session->get('fla_polling_last_request', 0);
         $now = time();
         
-        // Prevent polling more than once every 3 seconds
         if ($now - $lastRequest < 3) {
-            // Return cached data or empty response
             return new JsonResponse([
                 'latestDiscussionId' => 0,
+                'latestPostId' => 0,
                 'unreadNotifications' => 0,
                 'rateLimited' => true
             ]);
@@ -49,19 +47,30 @@ class RealTimeCheckController implements RequestHandlerInterface
         
         $session->set('fla_polling_last_request', $now);
 
-        // Get latest discussion ID (only public discussions user can see)
+        // Get latest discussion ID (visible to user)
         $latestDiscussionId = 0;
         try {
-            // Use Flarum's visibility scope to respect permissions
             $latestDiscussionId = (int) Discussion::query()
                 ->whereVisibleTo($actor)
                 ->max('id');
         } catch (\Exception $e) {
-            // Log error in production
             error_log('FLA Polling Error: ' . $e->getMessage());
         }
 
-        // Count unread notifications for current user only
+        // Get latest post ID (visible to user)
+        $latestPostId = 0;
+        try {
+            $latestPostId = (int) Post::query()
+                ->where('type', 'comment') // Only count comment posts, not events
+                ->whereHas('discussion', function ($query) use ($actor) {
+                    $query->whereVisibleTo($actor);
+                })
+                ->max('id');
+        } catch (\Exception $e) {
+            error_log('FLA Polling Post Error: ' . $e->getMessage());
+        }
+
+        // Count unread notifications
         $unreadNotifications = 0;
         try {
             $unreadNotifications = (int) Notification::query()
@@ -74,6 +83,7 @@ class RealTimeCheckController implements RequestHandlerInterface
 
         return new JsonResponse([
             'latestDiscussionId' => $latestDiscussionId,
+            'latestPostId' => $latestPostId,
             'unreadNotifications' => $unreadNotifications,
             'timestamp' => $now
         ]);
