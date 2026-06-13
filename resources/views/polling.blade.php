@@ -1,29 +1,34 @@
 <script>
 /**
- * FLA Polling - Secure real-time polling for Flarum 2.0
- * Includes CSRF protection and error handling
+ * FLA Polling - Real-time polling for Flarum 2.0
+ * Detects new discussions AND new posts in current discussion
  */
 (function() {
   'use strict';
 
   var pollingInterval = 10000;
   var initialDiscussionId = 0;
-  var lastCheckedId = 0;
+  var initialPostId = 0;
+  var lastCheckedDiscussionId = 0;
+  var lastCheckedPostId = 0;
+  var currentDiscussionId = null; // ID of discussion being viewed (if any)
   var lastNotificationCount = 0;
   var initialized = false;
   var errorCount = 0;
-  var maxErrors = 5; // Stop after 5 consecutive errors
+  var maxErrors = 5;
 
   var translations = {
     en: {
       new_discussions: 'New discussions available!',
+      new_posts: 'New posts in this discussion!',
       reload: 'Reload',
-      error: 'Connection error'
+      scroll: 'Scroll to new posts'
     },
     it: {
       new_discussions: 'Nuove discussioni disponibili!',
+      new_posts: 'Nuovi messaggi in questa discussione!',
       reload: 'Ricarica',
-      error: 'Errore di connessione'
+      scroll: 'Vai ai nuovi messaggi'
     }
   };
 
@@ -48,18 +53,77 @@
     }
   }
 
+  /**
+   * Extract discussion ID from current URL or route
+   */
+  function getCurrentDiscussionId() {
+    // Method 1: Check URL path
+    var path = window.location.pathname;
+    var match = path.match(/\/d\/(\d+)/);
+    if (match && match[1]) {
+      return parseInt(match[1]);
+    }
+
+    // Method 2: Check Flarum's current route
+    if (app && app.current && app.current.discussion) {
+      return parseInt(app.current.discussion.id());
+    }
+
+    // Method 3: Check if we're on a discussion page via data attributes
+    var discussionList = document.querySelector('[data-id]');
+    if (discussionList && path.indexOf('/d/') !== -1) {
+      var idMatch = path.match(/\/d\/(\d+)/);
+      if (idMatch) return parseInt(idMatch[1]);
+    }
+
+    return null;
+  }
+
+  /**
+   * Get the last post ID visible in the current discussion
+   */
+  function getCurrentPostId() {
+    if (!currentDiscussionId) return 0;
+
+    var posts = app.store.all('posts') || [];
+    if (posts.length === 0) return 0;
+
+    var discussionPosts = posts.filter(function(post) {
+      return post.relationship('discussion') && 
+             parseInt(post.relationship('discussion').id()) === currentDiscussionId;
+    });
+
+    if (discussionPosts.length === 0) return 0;
+
+    return Math.max.apply(null, discussionPosts.map(function(p) {
+      return parseInt(p.id());
+    }));
+  }
+
   function initPolling() {
     if (initialized) return;
     initialized = true;
 
-    if (app.store.all('discussions')) {
-      var discussions = app.store.all('discussions');
-      if (discussions.length > 0) {
-        var maxId = Math.max.apply(null, discussions.map(function(d) {
-          return parseInt(d.id());
-        }));
-        initialDiscussionId = maxId;
-        lastCheckedId = maxId;
+    // Detect if we're viewing a specific discussion
+    currentDiscussionId = getCurrentDiscussionId();
+
+    if (currentDiscussionId) {
+      // We're in a discussion - track both discussion and post IDs
+      initialDiscussionId = currentDiscussionId;
+      initialPostId = getCurrentPostId();
+      lastCheckedDiscussionId = currentDiscussionId;
+      lastCheckedPostId = initialPostId;
+    } else {
+      // We're on discussion list - track only discussion IDs
+      if (app.store.all('discussions')) {
+        var discussions = app.store.all('discussions');
+        if (discussions.length > 0) {
+          var maxId = Math.max.apply(null, discussions.map(function(d) {
+            return parseInt(d.id());
+          }));
+          initialDiscussionId = maxId;
+          lastCheckedDiscussionId = maxId;
+        }
       }
     }
 
@@ -68,7 +132,6 @@
   }
 
   function checkForUpdates() {
-    // Stop polling after too many errors (prevent server overload)
     if (errorCount > maxErrors) {
       console.warn('FLA Polling: Stopped due to too many errors');
       return;
@@ -82,14 +145,12 @@
       headers: {
         'Accept': 'application/json',
         'X-Requested-With': 'XMLHttpRequest',
-        // Add CSRF token if available
         'X-CSRF-Token': getCsrfToken() || ''
       }
     })
     .then(function(response) {
       if (!response.ok) {
         if (response.status === 401) {
-          // User not logged in - stop polling
           errorCount = maxErrors + 1;
           return null;
         }
@@ -100,22 +161,27 @@
     .then(function(data) {
       if (!data) return;
       
-      // Reset error count on success
       errorCount = 0;
       
-      // Handle rate limiting
-      if (data.rateLimited) {
-        return;
+      if (data.rateLimited) return;
+      
+      var latestDiscussionId = data.latestDiscussionId || 0;
+      var latestPostId = data.latestPostId || 0;
+      
+      // Check for new discussions (only if not in a specific discussion)
+      if (!currentDiscussionId && 
+          latestDiscussionId > initialDiscussionId && 
+          latestDiscussionId > lastCheckedDiscussionId) {
+        showBanner('discussion');
       }
       
-      var latestId = data.latestDiscussionId || 0;
-      
-      // Show banner only for discussions created by others
-      if (latestId > initialDiscussionId && latestId > lastCheckedId) {
-        showBanner();
+      // Check for new posts in current discussion
+      if (currentDiscussionId && latestPostId > lastCheckedPostId) {
+        showBanner('post');
       }
       
-      lastCheckedId = latestId;
+      lastCheckedDiscussionId = latestDiscussionId;
+      lastCheckedPostId = latestPostId;
 
       // Update notification badge
       var notificationCount = data.unreadNotifications || 0;
@@ -126,43 +192,53 @@
     })
     .catch(function(error) {
       errorCount++;
-      // Silent fail - don't spam console
-      // console.error('FLA Polling error:', error);
     });
   }
 
-  function getCsrfToken() {
-    // Try to get CSRF token from Flarum's meta tags or cookies
-    var token = document.querySelector('meta[name="csrf-token"]');
-    if (token) {
-      return token.getAttribute('content');
-    }
-    
-    // Fallback: check for Flarum's session token
-    if (app && app.session) {
-      return app.session.csrfToken;
-    }
-    
-    return null;
-  }
-
-  function showBanner() {
+  function showBanner(type) {
     if (document.querySelector('.FlaPollingBanner')) return;
+
+    var text, buttonText;
+    if (type === 'post') {
+      text = getTranslation('new_posts');
+      buttonText = getTranslation('scroll');
+    } else {
+      text = getTranslation('new_discussions');
+      buttonText = getTranslation('reload');
+    }
 
     var banner = document.createElement('div');
     banner.className = 'FlaPollingBanner';
     banner.innerHTML = '<div class="FlaPollingBanner-content">' +
       '<i class="fas fa-info-circle"></i> ' +
-      getTranslation('new_discussions') + ' ' +
-      '<button class="FlaPollingBanner-reload">' + getTranslation('reload') + '</button>' +
+      text + ' ' +
+      '<button class="FlaPollingBanner-reload">' + buttonText + '</button>' +
       '</div>';
     
-    banner.querySelector('.FlaPollingBanner-reload').addEventListener('click', function() {
-      window.location.reload();
+    var button = banner.querySelector('.FlaPollingBanner-reload');
+    button.addEventListener('click', function() {
+      if (type === 'post' && currentDiscussionId) {
+        // Scroll to bottom to see new posts
+        window.scrollTo({
+          top: document.body.scrollHeight,
+          behavior: 'smooth'
+        });
+        // Remove banner
+        if (banner.parentNode) {
+          banner.style.opacity = '0';
+          setTimeout(function() {
+            if (banner.parentNode) banner.parentNode.removeChild(banner);
+          }, 300);
+        }
+      } else {
+        // Reload page
+        window.location.reload();
+      }
     });
 
     document.body.insertBefore(banner, document.body.firstChild);
 
+    // Auto-hide after 30 seconds
     setTimeout(function() {
       if (banner.parentNode) {
         banner.style.opacity = '0';
@@ -171,6 +247,17 @@
         }, 300);
       }
     }, 30000);
+  }
+
+  function getCsrfToken() {
+    var token = document.querySelector('meta[name="csrf-token"]');
+    if (token) {
+      return token.getAttribute('content');
+    }
+    if (app && app.session) {
+      return app.session.csrfToken;
+    }
+    return null;
   }
 
   function updateNotificationBadge(count) {
