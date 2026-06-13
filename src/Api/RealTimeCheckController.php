@@ -6,6 +6,7 @@ use Flarum\Discussion\Discussion;
 use Flarum\Post\Post;
 use Flarum\Notification\Notification;
 use Flarum\Http\RequestUtil;
+use Illuminate\Database\Eloquent\Builder;
 use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
@@ -25,25 +26,36 @@ class RealTimeCheckController implements RequestHandlerInterface
             $discussionId = isset($queryParams['discussionId']) ? (int) $queryParams['discussionId'] : 0;
 
             $latestDiscussionId = 0;
-            try { $latestDiscussionId = (int) Discussion::query()->whereVisibleTo($actor)->max('id'); } catch (\Exception $e) {}
+            try { 
+                $latestDiscussionId = (int) Discussion::query()->whereVisibleTo($actor)->max('id'); 
+            } catch (\Exception $e) {}
 
             $latestPostId = 0;
             try {
                 if ($discussionId > 0) {
+                    // Specific discussion: get latest post for this discussion only
                     $discussion = Discussion::where('id', $discussionId)->whereVisibleTo($actor)->first();
                     if ($discussion) {
-                        $latestPostId = (int) Post::where('discussion_id', $discussionId)->where('type', 'comment')->max('id');
+                        $latestPostId = (int) Post::where('discussion_id', $discussionId)
+                            ->where('type', 'comment')
+                            ->max('id');
                     }
                 } else {
-                    $latestPostId = (int) Post::where('type', 'comment')
-                        ->whereIn('discussion_id', function($query) use ($actor) {
-                            $query->select('id')->from('discussions')->whereVisibleTo($actor);
-                        })->max('id');
+                    // List view: get latest post from visible discussions only
+                    $visibleDiscussionIds = Discussion::whereVisibleTo($actor)->pluck('id')->all();
+                    
+                    if (!empty($visibleDiscussionIds)) {
+                        $latestPostId = (int) Post::whereIn('discussion_id', $visibleDiscussionIds)
+                            ->where('type', 'comment')
+                            ->max('id');
+                    }
                 }
             } catch (\Exception $e) {}
 
             $unreadNotifications = 0;
-            try { $unreadNotifications = (int) Notification::where('user_id', $actor->id)->whereNull('read_at')->count(); } catch (\Exception $e) {}
+            try { 
+                $unreadNotifications = (int) Notification::where('user_id', $actor->id)->whereNull('read_at')->count(); 
+            } catch (\Exception $e) {}
 
             return new JsonResponse([
                 'latestDiscussionId' => $latestDiscussionId,
