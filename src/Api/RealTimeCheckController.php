@@ -11,8 +11,8 @@ use Psr\Http\Server\RequestHandlerInterface;
 use Laminas\Diactoros\Response\JsonResponse;
 
 /**
- * Controller that handles real-time polling requests
- * Returns the latest discussion ID and unread notification count
+ * Secure controller for real-time polling
+ * Includes rate limiting and permission checks
  */
 class RealTimeCheckController implements RequestHandlerInterface
 {
@@ -23,31 +23,59 @@ class RealTimeCheckController implements RequestHandlerInterface
     {
         $actor = RequestUtil::getActor($request);
 
-        // Get the ID of the most recently created discussion
+        // SECURITY: Only allow authenticated users
+        if (!$actor->exists) {
+            return new JsonResponse([
+                'error' => 'Unauthorized',
+                'latestDiscussionId' => 0,
+                'unreadNotifications' => 0
+            ], 401);
+        }
+
+        // SECURITY: Rate limiting - check session for last request time
+        $session = $request->getAttribute('session');
+        $lastRequest = $session->get('fla_polling_last_request', 0);
+        $now = time();
+        
+        // Prevent polling more than once every 3 seconds
+        if ($now - $lastRequest < 3) {
+            // Return cached data or empty response
+            return new JsonResponse([
+                'latestDiscussionId' => 0,
+                'unreadNotifications' => 0,
+                'rateLimited' => true
+            ]);
+        }
+        
+        $session->set('fla_polling_last_request', $now);
+
+        // Get latest discussion ID (only public discussions user can see)
         $latestDiscussionId = 0;
         try {
-            $latestDiscussionId = (int) Discussion::query()->max('id');
+            // Use Flarum's visibility scope to respect permissions
+            $latestDiscussionId = (int) Discussion::query()
+                ->whereVisibleTo($actor)
+                ->max('id');
         } catch (\Exception $e) {
-            // Silently fail
+            // Log error in production
+            error_log('FLA Polling Error: ' . $e->getMessage());
         }
 
-        // Count unread notifications (only for logged-in users)
+        // Count unread notifications for current user only
         $unreadNotifications = 0;
-        if ($actor->exists) {
-            try {
-                $unreadNotifications = (int) Notification::query()
-                    ->where('user_id', $actor->id)
-                    ->whereNull('read_at')
-                    ->count();
-            } catch (\Exception $e) {
-                // Silently fail
-            }
+        try {
+            $unreadNotifications = (int) Notification::query()
+                ->where('user_id', $actor->id)
+                ->whereNull('read_at')
+                ->count();
+        } catch (\Exception $e) {
+            error_log('FLA Polling Notification Error: ' . $e->getMessage());
         }
 
-        // Return simple JSON response
         return new JsonResponse([
             'latestDiscussionId' => $latestDiscussionId,
-            'unreadNotifications' => $unreadNotifications
+            'unreadNotifications' => $unreadNotifications,
+            'timestamp' => $now
         ]);
     }
 }
