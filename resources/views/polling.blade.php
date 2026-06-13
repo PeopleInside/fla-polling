@@ -73,33 +73,35 @@
       method: 'GET',
       credentials: 'same-origin',
       headers: {
-        'Accept': 'application/vnd.api+json',
+        'Accept': 'application/json',
         'X-Requested-With': 'XMLHttpRequest'
       }
     })
     .then(function(response) {
-      if (!response.ok) throw new Error('Network error');
+      if (!response.ok) {
+        throw new Error('Network error: ' + response.status);
+      }
       return response.json();
     })
-    .then(function(result) {
-      if (!result.data || !result.data[0]) return;
-      
-      var data = result.data[0].attributes;
+    .then(function(data) {
+      // Now data is directly the JSON object, not wrapped in JSON:API format
+      if (!data) return;
       
       // Check for new discussions
       if (data.latestDiscussionId > lastDiscussionId && lastDiscussionId > 0) {
         showBanner();
       }
-      lastDiscussionId = data.latestDiscussionId;
+      lastDiscussionId = data.latestDiscussionId || 0;
 
       // Check for new notifications
       if (data.unreadNotifications !== lastNotificationCount) {
-        updateNotificationBadge(data.unreadNotifications);
-        lastNotificationCount = data.unreadNotifications;
+        updateNotificationBadge(data.unreadNotifications || 0);
+        lastNotificationCount = data.unreadNotifications || 0;
       }
     })
     .catch(function(error) {
-      // Silent fail
+      // Silent fail - uncomment to debug
+      // console.error('FLA Polling error:', error);
     });
   }
 
