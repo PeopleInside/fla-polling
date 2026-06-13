@@ -19,11 +19,29 @@ return [
     (new Extend\Routes('api'))
         ->get('/realtime-check', 'realtime.check', RealTimeCheckController::class),
     
-    // Inject JavaScript into the forum frontend
+    // Inject CSS into the forum frontend
     (new Extend\Frontend('forum'))
-        ->js(__DIR__.'/js/dist/extension.js')
         ->css(__DIR__.'/resources/less/extension.less'),
+    
+    // Inject JavaScript inline into the forum body (bypasses webpack module system)
+    (new Extend\Frontend('forum'))
+        ->body(function (\Flarum\Frontend\Document $document) {
+            $document->payload['flaPolling'] = [
+                'enabled' => true,
+                'apiUrl' => '/api/realtime-check'
+            ];
+        }),
     
     // Load language translations
     (new Extend\Locales(__DIR__.'/locale')),
+    
+    // Add inline JavaScript via a view
+    (new Extend\View())
+        ->namespace('fla-polling', __DIR__.'/resources/views'),
+    
+    // Inject the script tag into the frontend
+    (new Extend\Frontend('forum'))
+        ->content(function (\Flarum\Frontend\Document $document) {
+            $document->head[] = '<script id="fla-polling-init" data-api-url="/api/realtime-check"></script>';
+        }),
 ];
