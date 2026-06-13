@@ -1,9 +1,9 @@
 <script>
 /**
- * FLA Polling - Final Production Version
- * - Multi-tab safe (sessionStorage isolation)
- * - Self-post suppression (works with mouse & keyboard)
- * - List view: alerts for new discussions AND new posts in existing topics
+ * FLA Polling - Production Version with Security
+ * - Skips polling for guests (no 401 errors)
+ * - Server-side rate limiting
+ * - Input validation
  */
 (function() {
   'use strict';
@@ -40,6 +40,13 @@
     else { setTimeout(function() { waitForApp(callback, attempts + 1); }, 200); }
   }
 
+  /**
+   * Check if user is logged in
+   */
+  function isLoggedIn() {
+    return app && app.session && app.session.user && app.session.user.id();
+  }
+
   function getCurrentDiscussionId() {
     var match = window.location.pathname.match(/\/d\/(\d+)/);
     return match ? parseInt(match[1]) : null;
@@ -61,14 +68,12 @@
     return 0;
   }
 
-  // Robust self-post detection (click + keyboard submit)
   function setupSelfPostDetection() {
     document.addEventListener('submit', function(e) {
       if (e.target.matches('.Composer form')) {
         try { sessionStorage.setItem('flaPolling_selfPostTs', Date.now().toString()); } catch(e){}
       }
     });
-    // Fallback for click
     document.addEventListener('click', function(e) {
       if (e.target.closest('.Composer .Button--primary')) {
         try { sessionStorage.setItem('flaPolling_selfPostTs', Date.now().toString()); } catch(e){}
@@ -79,7 +84,7 @@
   function checkAndClearSelfPostFlag() {
     try {
       var ts = parseInt(sessionStorage.getItem('flaPolling_selfPostTs') || '0');
-      if (ts > 0 && (Date.now() - ts) < 25000) { // 25s window
+      if (ts > 0 && (Date.now() - ts) < 25000) {
         sessionStorage.removeItem('flaPolling_selfPostTs');
         return true;
       }
@@ -118,6 +123,12 @@
 
   function initPolling() {
     if (initialized) return;
+    
+    // SECURITY: Don't start polling for guests
+    if (!isLoggedIn()) {
+      return;
+    }
+    
     initialized = true;
     resetBaseline();
     setupSelfPostDetection();
@@ -146,7 +157,10 @@
     })
     .then(function(response) {
       if (!response.ok) {
-        if (response.status === 401) { errorCount = maxErrors + 1; return null; }
+        if (response.status === 401 || response.status === 429) {
+          errorCount = maxErrors + 1;
+          return null;
+        }
         throw new Error('HTTP ' + response.status);
       }
       return response.json();
@@ -155,7 +169,6 @@
       if (!data) return;
       errorCount = 0;
 
-      // FIRST POLL: Set baseline silently
       if (!baselineSet) {
         baselineSet = true;
         baselineDiscussionId = data.latestDiscussionId || 0;
@@ -168,14 +181,12 @@
       var isSelf = checkAndClearSelfPostFlag();
 
       if (currentDiscussionId) {
-        // INSIDE A DISCUSSION: Only care about new posts
         if (isNewPost) {
-          if (isSelf) { baselinePostId = data.latestPostId; return; } // I wrote it, suppress
+          if (isSelf) { baselinePostId = data.latestPostId; return; }
           showBanner('post', data.latestDiscussionId, data.latestPostId);
           return;
         }
       } else {
-        // LIST VIEW: Care about new discussions OR new posts anywhere
         if (isNewDisc) {
           if (isSelf) { baselineDiscussionId = data.latestDiscussionId; baselinePostId = data.latestPostId; return; }
           showBanner('discussion', data.latestDiscussionId, data.latestPostId);
@@ -188,7 +199,6 @@
         }
       }
 
-      // Update notifications
       var nCount = data.unreadNotifications || 0;
       if (nCount !== lastNotificationCount) { updateNotificationBadge(nCount); lastNotificationCount = nCount; }
     })
