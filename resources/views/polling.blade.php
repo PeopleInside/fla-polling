@@ -7,11 +7,12 @@
   'use strict';
 
   var pollingInterval = 10000;
-  var lastDiscussionId = 0;
+  var initialDiscussionId = 0;  // ID al caricamento della pagina
+  var lastCheckedId = 0;         // ID dell'ultimo controllo
   var lastNotificationCount = 0;
   var initialized = false;
 
-  // Translations (loaded from Flarum's locale system)
+  // Translations
   var translations = {
     en: {
       new_discussions: 'New discussions available!',
@@ -51,13 +52,16 @@
     if (initialized) return;
     initialized = true;
 
-    // Get initial discussion ID
+    // Get the ID of discussions currently visible on the page
     if (app.store.all('discussions')) {
       var discussions = app.store.all('discussions');
       if (discussions.length > 0) {
-        lastDiscussionId = Math.max.apply(null, discussions.map(function(d) {
+        var maxId = Math.max.apply(null, discussions.map(function(d) {
           return parseInt(d.id());
         }));
+        // This is the baseline - discussions visible when page loaded
+        initialDiscussionId = maxId;
+        lastCheckedId = maxId;
       }
     }
 
@@ -84,24 +88,30 @@
       return response.json();
     })
     .then(function(data) {
-      // Now data is directly the JSON object, not wrapped in JSON:API format
       if (!data) return;
       
-      // Check for new discussions
-      if (data.latestDiscussionId > lastDiscussionId && lastDiscussionId > 0) {
+      var latestId = data.latestDiscussionId || 0;
+      
+      // Show banner ONLY if:
+      // 1. There's a newer discussion than what was on the page initially
+      // 2. AND it's newer than what we last checked
+      // This prevents showing banner for discussions created by current user
+      if (latestId > initialDiscussionId && latestId > lastCheckedId) {
         showBanner();
       }
-      lastDiscussionId = data.latestDiscussionId || 0;
+      
+      // Always update lastCheckedId to track what we've seen
+      lastCheckedId = latestId;
 
       // Check for new notifications
-      if (data.unreadNotifications !== lastNotificationCount) {
-        updateNotificationBadge(data.unreadNotifications || 0);
-        lastNotificationCount = data.unreadNotifications || 0;
+      var notificationCount = data.unreadNotifications || 0;
+      if (notificationCount !== lastNotificationCount) {
+        updateNotificationBadge(notificationCount);
+        lastNotificationCount = notificationCount;
       }
     })
     .catch(function(error) {
-      // Silent fail - uncomment to debug
-      // console.error('FLA Polling error:', error);
+      // Silent fail
     });
   }
 
