@@ -2,6 +2,7 @@
 /**
  * FLA Polling - Real-time polling for Flarum 2.0
  * Detects new discussions AND new posts in current discussion
+ * Handles page navigation to avoid showing banner to content creators
  */
 (function() {
   'use strict';
@@ -14,6 +15,8 @@
   var initialized = false;
   var errorCount = 0;
   var maxErrors = 5;
+  var currentUrl = window.location.href;
+  var bannerDismissed = false;
 
   var translations = {
     en: {
@@ -70,7 +73,6 @@
    * Get the last post ID from the DOM
    */
   function getLastPostIdFromDOM() {
-    // Method 1: Look for elements with ID "Post-XXX"
     var postElements = document.querySelectorAll('[id^="Post-"]');
     if (postElements.length > 0) {
       var maxId = 0;
@@ -81,7 +83,6 @@
       return maxId;
     }
 
-    // Method 2: Look for PostStream items with data-id
     var streamItems = document.querySelectorAll('.PostStream-item[data-id]');
     if (streamItems.length > 0) {
       var maxId = 0;
@@ -110,31 +111,82 @@
     return 0;
   }
 
+  /**
+   * Update reference values when page changes
+   */
+  function updateReferenceValues() {
+    currentDiscussionId = getCurrentDiscussionId();
+    bannerDismissed = false;
+    
+    if (currentDiscussionId) {
+      lastSeenPostId = getLastPostIdFromDOM();
+      lastSeenDiscussionId = 0;
+      console.log('FLA Polling: Updated - In discussion', currentDiscussionId, '- Last post ID:', lastSeenPostId);
+    } else {
+      lastSeenDiscussionId = getLastDiscussionIdFromPage();
+      lastSeenPostId = 0;
+      console.log('FLA Polling: Updated - On discussion list - Last discussion ID:', lastSeenDiscussionId);
+    }
+  }
+
+  /**
+   * Monitor URL changes (for SPA navigation)
+   */
+  function monitorUrlChanges() {
+    // Monitor popstate (browser back/forward)
+    window.addEventListener('popstate', function() {
+      if (window.location.href !== currentUrl) {
+        currentUrl = window.location.href;
+        setTimeout(updateReferenceValues, 500);
+      }
+    });
+
+    // Monitor clicks on links (for SPA navigation)
+    document.addEventListener('click', function(e) {
+      var target = e.target;
+      while (target && target.tagName !== 'A') {
+        target = target.parentNode;
+      }
+      
+      if (target && target.tagName === 'A' && target.href) {
+        setTimeout(function() {
+          if (window.location.href !== currentUrl) {
+            currentUrl = window.location.href;
+            updateReferenceValues();
+          }
+        }, 500);
+      }
+    });
+
+    // Monitor for Flarum route changes
+    if (app && app.current) {
+      var originalRoute = app.current;
+      Object.defineProperty(app, 'current', {
+        get: function() {
+          return originalRoute;
+        },
+        set: function(newValue) {
+          originalRoute = newValue;
+          setTimeout(updateReferenceValues, 500);
+        },
+        configurable: true
+      });
+    }
+  }
+
   function initPolling() {
     if (initialized) return;
     initialized = true;
 
-    // Detect if we're viewing a specific discussion
-    currentDiscussionId = getCurrentDiscussionId();
+    updateReferenceValues();
+    monitorUrlChanges();
 
-    if (currentDiscussionId) {
-      // We're in a discussion - track post IDs
-      lastSeenPostId = getLastPostIdFromDOM();
-      console.log('FLA Polling: In discussion', currentDiscussionId, '- Last post ID:', lastSeenPostId);
-    } else {
-      // We're on discussion list - track discussion IDs
-      lastSeenDiscussionId = getLastDiscussionIdFromPage();
-      console.log('FLA Polling: On discussion list - Last discussion ID:', lastSeenDiscussionId);
-    }
-
-    // Start polling
     setInterval(checkForUpdates, pollingInterval);
     checkForUpdates();
   }
 
   function checkForUpdates() {
-    if (errorCount > maxErrors) {
-      console.warn('FLA Polling: Stopped due to too many errors');
+    if (errorCount > maxErrors || bannerDismissed) {
       return;
     }
 
@@ -170,23 +222,13 @@
       var latestDiscussionId = data.latestDiscussionId || 0;
       var latestPostId = data.latestPostId || 0;
       
-      console.log('FLA Polling check:', {
-        currentDiscussionId: currentDiscussionId,
-        lastSeenDiscussionId: lastSeenDiscussionId,
-        latestDiscussionId: latestDiscussionId,
-        lastSeenPostId: lastSeenPostId,
-        latestPostId: latestPostId
-      });
-      
       // Check for new discussions (only if not in a specific discussion)
       if (!currentDiscussionId && latestDiscussionId > lastSeenDiscussionId && lastSeenDiscussionId > 0) {
-        console.log('FLA Polling: New discussion detected!');
         showBanner('discussion');
       }
       
       // Check for new posts in current discussion
       if (currentDiscussionId && latestPostId > lastSeenPostId && lastSeenPostId > 0) {
-        console.log('FLA Polling: New post detected!');
         showBanner('post');
       }
       
@@ -203,7 +245,6 @@
     })
     .catch(function(error) {
       errorCount++;
-      console.error('FLA Polling error:', error);
     });
   }
 
@@ -225,29 +266,38 @@
       '<i class="fas fa-info-circle"></i> ' +
       text + ' ' +
       '<button class="FlaPollingBanner-reload">' + buttonText + '</button>' +
+      '<button class="FlaPollingBanner-close" style="margin-left:10px;background:rgba(255,255,255,0.1);border:1px solid rgba(255,255,255,0.2);">✕</button>' +
       '</div>';
     
-    var button = banner.querySelector('.FlaPollingBanner-reload');
-    button.addEventListener('click', function() {
-      if (type === 'post' && currentDiscussionId) {
-        // Reload page to see new posts
-        window.location.reload();
-      } else {
-        window.location.reload();
-      }
+    var reloadButton = banner.querySelector('.FlaPollingBanner-reload');
+    reloadButton.addEventListener('click', function() {
+      window.location.reload();
+    });
+
+    var closeButton = banner.querySelector('.FlaPollingBanner-close');
+    closeButton.addEventListener('click', function() {
+      bannerDismissed = true;
+      removeBanner(banner);
     });
 
     document.body.insertBefore(banner, document.body.firstChild);
-    console.log('FLA Polling: Banner shown!');
 
+    // Auto-hide after 30 seconds
     setTimeout(function() {
-      if (banner.parentNode) {
-        banner.style.opacity = '0';
-        setTimeout(function() {
-          if (banner.parentNode) banner.parentNode.removeChild(banner);
-        }, 300);
-      }
+      removeBanner(banner);
     }, 30000);
+  }
+
+  function removeBanner(banner) {
+    if (banner && banner.parentNode) {
+      banner.style.opacity = '0';
+      banner.style.maxHeight = '0';
+      banner.style.paddingTop = '0';
+      banner.style.paddingBottom = '0';
+      setTimeout(function() {
+        if (banner.parentNode) banner.parentNode.removeChild(banner);
+      }, 300);
+    }
   }
 
   function getCsrfToken() {
