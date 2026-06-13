@@ -1,0 +1,7 @@
+fla-polling:
+  forum:
+    banner:
+      new_discussions: "Nuove discussioni disponibili!"
+      reload: "Ricarica"
+    notification:
+      new_notifications: "Hai nuove notifiche"
