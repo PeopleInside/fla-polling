@@ -10,10 +10,10 @@ use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
 use Psr\Http\Server\RequestHandlerInterface;
 use Laminas\Diactoros\Response\JsonResponse;
+use Illuminate\Support\Arr;
 
 /**
  * Secure controller for real-time polling
- * Checks for new discussions, new posts in specific discussion, and notifications
  */
 class RealTimeCheckController implements RequestHandlerInterface
 {
@@ -47,7 +47,7 @@ class RealTimeCheckController implements RequestHandlerInterface
         
         $session->set('fla_polling_last_request', $now);
 
-        // Get optional discussion ID from query params
+        // Get discussion ID from query string
         $queryParams = $request->getQueryParams();
         $discussionId = isset($queryParams['discussionId']) ? (int) $queryParams['discussionId'] : 0;
 
@@ -58,28 +58,33 @@ class RealTimeCheckController implements RequestHandlerInterface
                 ->whereVisibleTo($actor)
                 ->max('id');
         } catch (\Exception $e) {
-            error_log('FLA Polling Error: ' . $e->getMessage());
+            error_log('FLA Polling Discussion Error: ' . $e->getMessage());
         }
 
         // Get latest post ID
         $latestPostId = 0;
         try {
             if ($discussionId > 0) {
-                // SECURITY: Verify user can see this discussion
-                $discussion = Discussion::find($discussionId);
-                if ($discussion && $discussion->isVisibleTo($actor)) {
-                    // Get latest post for THIS specific discussion only
+                // SECURITY: Verify discussion exists and user can see it
+                $discussion = Discussion::query()
+                    ->whereVisibleTo($actor)
+                    ->find($discussionId);
+                
+                if ($discussion) {
+                    // Get latest post for THIS specific discussion
                     $latestPostId = (int) Post::query()
                         ->where('discussion_id', $discussionId)
                         ->where('type', 'comment')
                         ->max('id');
                 }
             } else {
-                // Get latest post globally (for discussion list view)
+                // Get latest post globally (only from visible discussions)
                 $latestPostId = (int) Post::query()
                     ->where('type', 'comment')
-                    ->whereHas('discussion', function ($query) use ($actor) {
-                        $query->whereVisibleTo($actor);
+                    ->whereIn('discussion_id', function($query) use ($actor) {
+                        $query->select('id')
+                            ->from('discussions')
+                            ->whereVisibleTo($actor);
                     })
                     ->max('id');
             }
