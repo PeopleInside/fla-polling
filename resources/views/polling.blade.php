@@ -1,26 +1,29 @@
 <script>
 /**
- * FLA Polling - Real-time polling for Flarum 2.0
- * Injected inline to bypass webpack module system
+ * FLA Polling - Secure real-time polling for Flarum 2.0
+ * Includes CSRF protection and error handling
  */
 (function() {
   'use strict';
 
   var pollingInterval = 10000;
-  var initialDiscussionId = 0;  // ID al caricamento della pagina
-  var lastCheckedId = 0;         // ID dell'ultimo controllo
+  var initialDiscussionId = 0;
+  var lastCheckedId = 0;
   var lastNotificationCount = 0;
   var initialized = false;
+  var errorCount = 0;
+  var maxErrors = 5; // Stop after 5 consecutive errors
 
-  // Translations
   var translations = {
     en: {
       new_discussions: 'New discussions available!',
-      reload: 'Reload'
+      reload: 'Reload',
+      error: 'Connection error'
     },
     it: {
       new_discussions: 'Nuove discussioni disponibili!',
-      reload: 'Ricarica'
+      reload: 'Ricarica',
+      error: 'Errore di connessione'
     }
   };
 
@@ -35,10 +38,7 @@
 
   function waitForApp(callback, attempts) {
     attempts = attempts || 0;
-    if (attempts > 50) {
-      console.warn('FLA Polling: Flarum app not found after 50 attempts');
-      return;
-    }
+    if (attempts > 50) return;
     if (typeof app !== 'undefined' && app.forum && app.store) {
       callback();
     } else {
@@ -52,25 +52,28 @@
     if (initialized) return;
     initialized = true;
 
-    // Get the ID of discussions currently visible on the page
     if (app.store.all('discussions')) {
       var discussions = app.store.all('discussions');
       if (discussions.length > 0) {
         var maxId = Math.max.apply(null, discussions.map(function(d) {
           return parseInt(d.id());
         }));
-        // This is the baseline - discussions visible when page loaded
         initialDiscussionId = maxId;
         lastCheckedId = maxId;
       }
     }
 
-    // Start polling
     setInterval(checkForUpdates, pollingInterval);
     checkForUpdates();
   }
 
   function checkForUpdates() {
+    // Stop polling after too many errors (prevent server overload)
+    if (errorCount > maxErrors) {
+      console.warn('FLA Polling: Stopped due to too many errors');
+      return;
+    }
+
     var apiUrl = '/api/realtime-check';
     
     fetch(apiUrl, {
@@ -78,32 +81,43 @@
       credentials: 'same-origin',
       headers: {
         'Accept': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest'
+        'X-Requested-With': 'XMLHttpRequest',
+        // Add CSRF token if available
+        'X-CSRF-Token': getCsrfToken() || ''
       }
     })
     .then(function(response) {
       if (!response.ok) {
-        throw new Error('Network error: ' + response.status);
+        if (response.status === 401) {
+          // User not logged in - stop polling
+          errorCount = maxErrors + 1;
+          return null;
+        }
+        throw new Error('HTTP ' + response.status);
       }
       return response.json();
     })
     .then(function(data) {
       if (!data) return;
       
+      // Reset error count on success
+      errorCount = 0;
+      
+      // Handle rate limiting
+      if (data.rateLimited) {
+        return;
+      }
+      
       var latestId = data.latestDiscussionId || 0;
       
-      // Show banner ONLY if:
-      // 1. There's a newer discussion than what was on the page initially
-      // 2. AND it's newer than what we last checked
-      // This prevents showing banner for discussions created by current user
+      // Show banner only for discussions created by others
       if (latestId > initialDiscussionId && latestId > lastCheckedId) {
         showBanner();
       }
       
-      // Always update lastCheckedId to track what we've seen
       lastCheckedId = latestId;
 
-      // Check for new notifications
+      // Update notification badge
       var notificationCount = data.unreadNotifications || 0;
       if (notificationCount !== lastNotificationCount) {
         updateNotificationBadge(notificationCount);
@@ -111,8 +125,25 @@
       }
     })
     .catch(function(error) {
-      // Silent fail
+      errorCount++;
+      // Silent fail - don't spam console
+      // console.error('FLA Polling error:', error);
     });
+  }
+
+  function getCsrfToken() {
+    // Try to get CSRF token from Flarum's meta tags or cookies
+    var token = document.querySelector('meta[name="csrf-token"]');
+    if (token) {
+      return token.getAttribute('content');
+    }
+    
+    // Fallback: check for Flarum's session token
+    if (app && app.session) {
+      return app.session.csrfToken;
+    }
+    
+    return null;
   }
 
   function showBanner() {
@@ -157,7 +188,6 @@
     }
   }
 
-  // Initialize when DOM is ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function() {
       waitForApp(initPolling);
