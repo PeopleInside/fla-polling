@@ -12,8 +12,10 @@ use Psr\Http\Server\RequestHandlerInterface;
 use Laminas\Diactoros\Response\JsonResponse;
 
 /**
- * Secure controller for real-time polling
- * Checks for new discussions, new posts, and notifications
+ * Secure real-time polling controller for Flarum 2.0
+ * - Scoped post queries per discussion
+ * - Rate limiting per session
+ * - Visibility scope enforcement
  */
 class RealTimeCheckController implements RequestHandlerInterface
 {
@@ -21,21 +23,16 @@ class RealTimeCheckController implements RequestHandlerInterface
     {
         $actor = RequestUtil::getActor($request);
 
-        // Only allow authenticated users
+        // SECURITY: Reject unauthenticated requests
         if (!$actor->exists) {
-            return new JsonResponse([
-                'error' => 'Unauthorized',
-                'latestDiscussionId' => 0,
-                'latestPostId' => 0,
-                'unreadNotifications' => 0
-            ], 401);
+            return new JsonResponse(['error' => 'Unauthorized'], 401);
         }
 
-        // Rate limiting
+        // SECURITY: Rate limiting (max 1 request every 3 seconds)
         $session = $request->getAttribute('session');
         $lastRequest = $session->get('fla_polling_last_request', 0);
         $now = time();
-        
+
         if ($now - $lastRequest < 3) {
             return new JsonResponse([
                 'latestDiscussionId' => 0,
@@ -44,33 +41,40 @@ class RealTimeCheckController implements RequestHandlerInterface
                 'rateLimited' => true
             ]);
         }
-        
         $session->set('fla_polling_last_request', $now);
 
-        // Get latest discussion ID (visible to user)
+        // Global latest discussion ID (visible to actor)
         $latestDiscussionId = 0;
         try {
             $latestDiscussionId = (int) Discussion::query()
                 ->whereVisibleTo($actor)
                 ->max('id');
         } catch (\Exception $e) {
-            error_log('FLA Polling Error: ' . $e->getMessage());
+            error_log('FLA Polling Discussion Error: ' . $e->getMessage());
         }
 
-        // Get latest post ID (visible to user)
+        // Context-aware latest post ID
         $latestPostId = 0;
-        try {
-            $latestPostId = (int) Post::query()
-                ->where('type', 'comment') // Only count comment posts, not events
-                ->whereHas('discussion', function ($query) use ($actor) {
-                    $query->whereVisibleTo($actor);
-                })
-                ->max('id');
-        } catch (\Exception $e) {
-            error_log('FLA Polling Post Error: ' . $e->getMessage());
+        $params = $request->getQueryParams();
+        $discussionId = isset($params['discussion_id']) ? (int) $params['discussion_id'] : 0;
+
+        if ($discussionId > 0) {
+            try {
+                // Verify user can actually view this discussion
+                $discussion = Discussion::find($discussionId);
+                if ($discussion && $discussion->isVisibleTo($actor)) {
+                    $latestPostId = (int) Post::query()
+                        ->where('discussion_id', $discussionId)
+                        ->where('type', 'comment') // Exclude system posts
+                        ->whereVisibleTo($actor)
+                        ->max('id');
+                }
+            } catch (\Exception $e) {
+                error_log('FLA Polling Post Error: ' . $e->getMessage());
+            }
         }
 
-        // Count unread notifications
+        // Unread notifications count
         $unreadNotifications = 0;
         try {
             $unreadNotifications = (int) Notification::query()
@@ -84,8 +88,7 @@ class RealTimeCheckController implements RequestHandlerInterface
         return new JsonResponse([
             'latestDiscussionId' => $latestDiscussionId,
             'latestPostId' => $latestPostId,
-            'unreadNotifications' => $unreadNotifications,
-            'timestamp' => $now
+            'unreadNotifications' => $unreadNotifications
         ]);
     }
 }
