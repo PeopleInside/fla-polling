@@ -2,47 +2,52 @@
 
 namespace PeopleInside\FlaPolling\Api;
 
-use Flarum\Api\Controller\AbstractSerializeController;
 use Flarum\Discussion\Discussion;
 use Flarum\Notification\Notification;
 use Flarum\Http\RequestUtil;
+use Psr\Http\Message\ResponseInterface;
 use Psr\Http\Message\ServerRequestInterface;
-use Tobscure\JsonApi\Document;
+use Psr\Http\Server\RequestHandlerInterface;
+use Laminas\Diactoros\Response\JsonResponse;
 
 /**
  * Controller that handles real-time polling requests
  * Returns the latest discussion ID and unread notification count
  */
-class RealTimeCheckController extends AbstractSerializeController
+class RealTimeCheckController implements RequestHandlerInterface
 {
     /**
-     * {@inheritdoc}
+     * Handle the request and return a response
      */
-    public $serializer = 'PeopleInside\FlaPolling\Api\Serializers\RealTimeSerializer';
-
-    /**
-     * {@inheritdoc}
-     */
-    protected function data(ServerRequestInterface $request, Document $document)
+    public function handle(ServerRequestInterface $request): ResponseInterface
     {
         $actor = RequestUtil::getActor($request);
 
         // Get the ID of the most recently created discussion
-        $latestDiscussionId = Discussion::query()->max('id') ?? 0;
+        $latestDiscussionId = 0;
+        try {
+            $latestDiscussionId = (int) Discussion::query()->max('id');
+        } catch (\Exception $e) {
+            // Silently fail
+        }
 
         // Count unread notifications (only for logged-in users)
         $unreadNotifications = 0;
         if ($actor->exists) {
-            $unreadNotifications = Notification::query()
-                ->where('user_id', $actor->id)
-                ->whereNull('read_at')
-                ->count();
+            try {
+                $unreadNotifications = (int) Notification::query()
+                    ->where('user_id', $actor->id)
+                    ->whereNull('read_at')
+                    ->count();
+            } catch (\Exception $e) {
+                // Silently fail
+            }
         }
 
-        // Return data as an array
-        return [
+        // Return simple JSON response
+        return new JsonResponse([
             'latestDiscussionId' => $latestDiscussionId,
             'unreadNotifications' => $unreadNotifications
-        ];
+        ]);
     }
 }
