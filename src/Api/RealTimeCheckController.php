@@ -16,7 +16,7 @@ class RealTimeCheckController implements RequestHandlerInterface
     /**
      * Rate limiting: max requests per minute per user
      */
-    private const RATE_LIMIT_MAX_REQUESTS = 20;
+    private const RATE_LIMIT_MAX_REQUESTS = 100;
     private const RATE_LIMIT_WINDOW = 60; // seconds
 
     public function handle(ServerRequestInterface $request): ResponseInterface
