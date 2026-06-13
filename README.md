@@ -35,6 +35,11 @@ For a forum with 100 concurrent users and 10-second polling interval:
 - Each request executes 2 simple database queries (less than 1ms each)
 - Total overhead: **negligible** (equivalent to a few page loads per minute)
 
+### Screenshots
+
+<img width="1180" height="412" alt="Screenshot 2026-06-13 171644" src="https://github.com/user-attachments/assets/6199b656-f966-4244-9ccc-ec9ceeabadaa" />
+<img width="1322" height="367" alt="Screenshot 2026-06-13 171733" src="https://github.com/user-attachments/assets/7a0d0140-c245-436d-8ada-907b21b39cd3" />
+
 ## 📦 Installation
 
 ### Via Composer (Recommended)
