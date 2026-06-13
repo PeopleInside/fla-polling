@@ -1,9 +1,7 @@
 <script>
 /**
- * FLA Polling - Production Version with Security
- * - Skips polling for guests (no 401 errors)
- * - Server-side rate limiting
- * - Input validation
+ * FLA Polling - Production Version
+ * Fixed: Polling continues even when banner is shown
  */
 (function() {
   'use strict';
@@ -17,10 +15,9 @@
   var initialized = false;
   var errorCount = 0;
   var maxErrors = 5;
-  var bannerDismissed = false;
   var snoozedUntil = 0;
-  var bannerShown = false;
   var lastKnownPath = window.location.pathname;
+  var bannerElement = null; // Track banner element
 
   var translations = {
     en: { new_discussions: 'New discussions available!', new_posts: 'New posts in this discussion!', new_content: 'New content available!', reload: 'Reload', snooze: 'Remind me in 30s', dismiss: '✕' },
@@ -40,9 +37,6 @@
     else { setTimeout(function() { waitForApp(callback, attempts + 1); }, 200); }
   }
 
-  /**
-   * Check if user is logged in
-   */
   function isLoggedIn() {
     return app && app.session && app.session.user && app.session.user.id();
   }
@@ -94,10 +88,9 @@
 
   function resetBaseline() {
     currentDiscussionId = getCurrentDiscussionId();
-    bannerDismissed = false;
     snoozedUntil = 0;
-    bannerShown = false;
     baselineSet = false;
+    bannerElement = null;
     
     if (currentDiscussionId) {
       baselineDiscussionId = 0;
@@ -111,12 +104,12 @@
   function monitorStorage() {
     window.addEventListener('storage', function(e) {
       if (e.key === 'flaPolling_bannerDismissed') {
-        bannerDismissed = true;
-        var b = document.querySelector('.FlaPollingBanner'); if(b) removeBanner(b);
+        // Banner dismissed in another tab - just remove it if visible
+        if (bannerElement) removeBanner(bannerElement);
       }
       if (e.key === 'flaPolling_bannerSnoozed') {
         snoozedUntil = parseInt(e.newValue) || 0;
-        var b = document.querySelector('.FlaPollingBanner'); if(b) removeBanner(b);
+        if (bannerElement) removeBanner(bannerElement);
       }
     });
   }
@@ -124,10 +117,7 @@
   function initPolling() {
     if (initialized) return;
     
-    // SECURITY: Don't start polling for guests
-    if (!isLoggedIn()) {
-      return;
-    }
+    if (!isLoggedIn()) return;
     
     initialized = true;
     resetBaseline();
@@ -138,7 +128,8 @@
   }
 
   function checkForUpdates() {
-    if (errorCount > maxErrors || bannerDismissed || bannerShown) return;
+    // Continue polling even if errors occurred (but stop after too many)
+    if (errorCount > maxErrors) return;
     if (Date.now() < snoozedUntil) return;
 
     var currentPath = window.location.pathname;
@@ -181,19 +172,38 @@
       var isSelf = checkAndClearSelfPostFlag();
 
       if (currentDiscussionId) {
+        // In a discussion - only check for new posts
         if (isNewPost) {
-          if (isSelf) { baselinePostId = data.latestPostId; return; }
+          if (isSelf) { 
+            baselinePostId = data.latestPostId; 
+            return; 
+          }
+          // Update baseline BEFORE showing banner
+          baselinePostId = data.latestPostId;
           showBanner('post', data.latestDiscussionId, data.latestPostId);
           return;
         }
       } else {
+        // In discussion list - check for new discussions or new posts
         if (isNewDisc) {
-          if (isSelf) { baselineDiscussionId = data.latestDiscussionId; baselinePostId = data.latestPostId; return; }
+          if (isSelf) { 
+            baselineDiscussionId = data.latestDiscussionId; 
+            baselinePostId = data.latestPostId; 
+            return; 
+          }
+          // Update baseline BEFORE showing banner
+          baselineDiscussionId = data.latestDiscussionId;
+          baselinePostId = data.latestPostId;
           showBanner('discussion', data.latestDiscussionId, data.latestPostId);
           return;
         }
         if (isNewPost) {
-          if (isSelf) { baselinePostId = data.latestPostId; return; }
+          if (isSelf) { 
+            baselinePostId = data.latestPostId; 
+            return; 
+          }
+          // Update baseline BEFORE showing banner
+          baselinePostId = data.latestPostId;
           showBanner('content', data.latestDiscussionId, data.latestPostId);
           return;
         }
@@ -206,8 +216,8 @@
   }
 
   function showBanner(type, latestDiscId, latestPostId) {
-    if (document.querySelector('.FlaPollingBanner')) return;
-    bannerShown = true;
+    // Don't show multiple banners
+    if (bannerElement) return;
 
     var text = (type === 'post') ? getTranslation('new_posts') : (type === 'content' ? getTranslation('new_content') : getTranslation('new_discussions'));
     var banner = document.createElement('div');
@@ -219,13 +229,11 @@
     
     banner.querySelector('.FlaPollingBanner-reload').onclick = function() { window.location.reload(); };
     banner.querySelector('.FlaPollingBanner-snooze').onclick = function() {
-      snoozedUntil = Date.now() + 30000; bannerShown = false;
+      snoozedUntil = Date.now() + 30000;
       try { localStorage.setItem('flaPolling_bannerSnoozed', snoozedUntil.toString()); } catch(e){}
       removeBanner(banner);
     };
     banner.querySelector('.FlaPollingBanner-close').onclick = function() {
-      bannerDismissed = true; bannerShown = false;
-      baselineDiscussionId = latestDiscId; baselinePostId = latestPostId;
       try { localStorage.setItem('flaPolling_bannerDismissed', Date.now().toString()); } catch(e){}
       removeBanner(banner);
     };
@@ -233,12 +241,20 @@
     var insertAfter = document.querySelector('.WelcomeHero') || document.querySelector('.App-header');
     if (insertAfter && insertAfter.parentNode) insertAfter.parentNode.insertBefore(banner, insertAfter.nextSibling);
     else document.body.insertBefore(banner, document.body.firstChild);
+    
+    bannerElement = banner;
   }
 
   function removeBanner(banner) {
     if (banner && banner.parentNode) {
-      banner.style.opacity = '0'; banner.style.maxHeight = '0'; banner.style.paddingTop = '0'; banner.style.paddingBottom = '0';
-      setTimeout(function() { if (banner.parentNode) banner.parentNode.removeChild(banner); }, 300);
+      banner.style.opacity = '0'; 
+      banner.style.maxHeight = '0'; 
+      banner.style.paddingTop = '0'; 
+      banner.style.paddingBottom = '0';
+      setTimeout(function() { 
+        if (banner.parentNode) banner.parentNode.removeChild(banner);
+        if (bannerElement === banner) bannerElement = null;
+      }, 300);
     }
   }
 
