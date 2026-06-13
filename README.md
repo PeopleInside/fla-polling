@@ -11,7 +11,7 @@ A lightweight real-time polling extension for Flarum 2.0 that provides instant u
 - ✅ **No SSH or Node.js** - Perfect for shared hosting
 - ✅ **Self-hosted** - Complete control, no external dependencies
 - ✅ **Lightweight** - Minimal server resources consumption
-- ✅ **Real-time updates** - Check for new discussions and notifications every 10 seconds (configurable)
+- ✅ **Real-time updates** - Check for new discussions and notifications every 10 seconds
 - ✅ **Visual notifications** - Banner for new discussions and badge for notification count
 - ✅ **Zero configuration** - Install and it just works
 - 🌍 **Multilingual support** - English and Italian included (easy to add more languages)
