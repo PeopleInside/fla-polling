@@ -23,25 +23,17 @@ return [
     (new Extend\Frontend('forum'))
         ->css(__DIR__.'/resources/less/extension.less'),
     
-    // Inject JavaScript inline into the forum body (bypasses webpack module system)
-    (new Extend\Frontend('forum'))
-        ->body(function (\Flarum\Frontend\Document $document) {
-            $document->payload['flaPolling'] = [
-                'enabled' => true,
-                'apiUrl' => '/api/realtime-check'
-            ];
-        }),
-    
     // Load language translations
     (new Extend\Locales(__DIR__.'/locale')),
     
-    // Add inline JavaScript via a view
+    // Register view namespace
     (new Extend\View())
         ->namespace('fla-polling', __DIR__.'/resources/views'),
     
-    // Inject the script tag into the frontend
+    // Inject the inline JavaScript into the forum body
     (new Extend\Frontend('forum'))
         ->content(function (\Flarum\Frontend\Document $document) {
-            $document->head[] = '<script id="fla-polling-init" data-api-url="/api/realtime-check"></script>';
+            $view = resolve('view');
+            $document->head[] = $view->make('fla-polling::polling')->render();
         }),
 ];
