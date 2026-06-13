@@ -11,19 +11,14 @@
 (function() {
   'use strict';
 
-  // Wait for Flarum to be ready
-  function waitForFlarum(callback) {
-    if (typeof app !== 'undefined' && app.forum) {
-      callback();
-    } else {
-      setTimeout(function() {
-        waitForFlarum(callback);
-      }, 100);
+  // Wait for Flarum to be fully ready
+  function initExtension() {
+    // Check if Flarum app is ready
+    if (typeof app === 'undefined' || !app.forum) {
+      setTimeout(initExtension, 100);
+      return;
     }
-  }
 
-  // Main initialization
-  waitForFlarum(function() {
     // State variables to track changes
     var lastDiscussionId = 0;
     var lastNotificationCount = 0;
@@ -40,11 +35,26 @@
     }
 
     /**
+     * Get translated text safely
+     */
+    function trans(key, defaultText) {
+      if (app.translator && app.translator.trans) {
+        return app.translator.trans(key);
+      }
+      return defaultText;
+    }
+
+    /**
      * Main polling function - checks for updates
      */
     function checkForUpdates() {
       var apiUrl = app.forum.attribute('apiUrl');
       
+      if (!apiUrl) {
+        console.error('FLA Polling: API URL not found');
+        return;
+      }
+
       fetch(apiUrl + '/realtime-check', {
         method: 'GET',
         credentials: 'same-origin',
@@ -53,6 +63,9 @@
         }
       })
       .then(function(response) {
+        if (!response.ok) {
+          throw new Error('Network response was not ok');
+        }
         return response.json();
       })
       .then(function(result) {
@@ -73,7 +86,8 @@
         }
       })
       .catch(function(error) {
-        console.error('FLA Polling error:', error);
+        // Silently fail - don't spam console
+        // console.error('FLA Polling error:', error);
       });
     }
 
@@ -84,9 +98,9 @@
       // Don't show multiple banners
       if (document.querySelector('.FlaPollingBanner')) return;
 
-      // Use Flarum's translation system
-      var bannerText = app.translator.trans('fla-polling.forum.banner.new_discussions');
-      var reloadText = app.translator.trans('fla-polling.forum.banner.reload');
+      // Use Flarum's translation system with fallbacks
+      var bannerText = trans('fla-polling.forum.banner.new_discussions', 'New discussions available!');
+      var reloadText = trans('fla-polling.forum.banner.reload', 'Reload');
 
       var banner = document.createElement('div');
       banner.className = 'FlaPollingBanner';
@@ -143,5 +157,12 @@
       setInterval(checkForUpdates, pollingInterval);
       checkForUpdates(); // Initial check
     }, 2000);
-  });
+  }
+
+  // Initialize when DOM is ready
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', initExtension);
+  } else {
+    initExtension();
+  }
 })();
