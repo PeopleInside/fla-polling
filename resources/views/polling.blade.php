@@ -2,16 +2,13 @@
 /**
  * FLA Polling - Real-time polling for Flarum 2.0
  * Detects new discussions AND new posts in current discussion
- * Reads post IDs from DOM for reliability
  */
 (function() {
   'use strict';
 
   var pollingInterval = 10000;
-  var initialDiscussionId = 0;
-  var initialPostId = 0;
-  var lastCheckedDiscussionId = 0;
-  var lastCheckedPostId = 0;
+  var lastSeenDiscussionId = 0;
+  var lastSeenPostId = 0;
   var currentDiscussionId = null;
   var lastNotificationCount = 0;
   var initialized = false;
@@ -44,7 +41,10 @@
 
   function waitForApp(callback, attempts) {
     attempts = attempts || 0;
-    if (attempts > 50) return;
+    if (attempts > 50) {
+      console.warn('FLA Polling: Flarum app not found after 50 attempts');
+      return;
+    }
     if (typeof app !== 'undefined' && app.forum && app.store) {
       callback();
     } else {
@@ -67,10 +67,9 @@
   }
 
   /**
-   * Get the last post ID from the DOM (most reliable method)
-   * Flarum renders posts with ID format "Post-123"
+   * Get the last post ID from the DOM
    */
-  function getCurrentPostIdFromDOM() {
+  function getLastPostIdFromDOM() {
     // Method 1: Look for elements with ID "Post-XXX"
     var postElements = document.querySelectorAll('[id^="Post-"]');
     if (postElements.length > 0) {
@@ -93,16 +92,21 @@
       return maxId;
     }
 
-    // Method 3: Fallback to Flarum store
-    if (app && app.store && app.store.all('posts')) {
-      var posts = app.store.all('posts');
-      if (posts.length > 0) {
-        return Math.max.apply(null, posts.map(function(p) {
-          return parseInt(p.id());
+    return 0;
+  }
+
+  /**
+   * Get the last discussion ID from the page
+   */
+  function getLastDiscussionIdFromPage() {
+    if (app && app.store && app.store.all('discussions')) {
+      var discussions = app.store.all('discussions');
+      if (discussions.length > 0) {
+        return Math.max.apply(null, discussions.map(function(d) {
+          return parseInt(d.id());
         }));
       }
     }
-
     return 0;
   }
 
@@ -115,24 +119,15 @@
 
     if (currentDiscussionId) {
       // We're in a discussion - track post IDs
-      initialDiscussionId = currentDiscussionId;
-      initialPostId = getCurrentPostIdFromDOM();
-      lastCheckedDiscussionId = currentDiscussionId;
-      lastCheckedPostId = initialPostId;
+      lastSeenPostId = getLastPostIdFromDOM();
+      console.log('FLA Polling: In discussion', currentDiscussionId, '- Last post ID:', lastSeenPostId);
     } else {
       // We're on discussion list - track discussion IDs
-      if (app && app.store && app.store.all('discussions')) {
-        var discussions = app.store.all('discussions');
-        if (discussions.length > 0) {
-          var maxId = Math.max.apply(null, discussions.map(function(d) {
-            return parseInt(d.id());
-          }));
-          initialDiscussionId = maxId;
-          lastCheckedDiscussionId = maxId;
-        }
-      }
+      lastSeenDiscussionId = getLastDiscussionIdFromPage();
+      console.log('FLA Polling: On discussion list - Last discussion ID:', lastSeenDiscussionId);
     }
 
+    // Start polling
     setInterval(checkForUpdates, pollingInterval);
     checkForUpdates();
   }
@@ -143,7 +138,6 @@
       return;
     }
 
-    // Pass discussionId to get specific data
     var apiUrl = '/api/realtime-check';
     if (currentDiscussionId) {
       apiUrl += '?discussionId=' + currentDiscussionId;
@@ -173,25 +167,32 @@
       
       errorCount = 0;
       
-      if (data.rateLimited) return;
-      
       var latestDiscussionId = data.latestDiscussionId || 0;
       var latestPostId = data.latestPostId || 0;
       
+      console.log('FLA Polling check:', {
+        currentDiscussionId: currentDiscussionId,
+        lastSeenDiscussionId: lastSeenDiscussionId,
+        latestDiscussionId: latestDiscussionId,
+        lastSeenPostId: lastSeenPostId,
+        latestPostId: latestPostId
+      });
+      
       // Check for new discussions (only if not in a specific discussion)
-      if (!currentDiscussionId && 
-          latestDiscussionId > initialDiscussionId && 
-          latestDiscussionId > lastCheckedDiscussionId) {
+      if (!currentDiscussionId && latestDiscussionId > lastSeenDiscussionId && lastSeenDiscussionId > 0) {
+        console.log('FLA Polling: New discussion detected!');
         showBanner('discussion');
       }
       
       // Check for new posts in current discussion
-      if (currentDiscussionId && latestPostId > lastCheckedPostId) {
+      if (currentDiscussionId && latestPostId > lastSeenPostId && lastSeenPostId > 0) {
+        console.log('FLA Polling: New post detected!');
         showBanner('post');
       }
       
-      lastCheckedDiscussionId = latestDiscussionId;
-      lastCheckedPostId = latestPostId;
+      // Update last seen values
+      lastSeenDiscussionId = latestDiscussionId;
+      lastSeenPostId = latestPostId;
 
       // Update notification badge
       var notificationCount = data.unreadNotifications || 0;
@@ -202,6 +203,7 @@
     })
     .catch(function(error) {
       errorCount++;
+      console.error('FLA Polling error:', error);
     });
   }
 
@@ -228,24 +230,15 @@
     var button = banner.querySelector('.FlaPollingBanner-reload');
     button.addEventListener('click', function() {
       if (type === 'post' && currentDiscussionId) {
-        // Scroll to bottom to see new posts
-        window.scrollTo({
-          top: document.body.scrollHeight,
-          behavior: 'smooth'
-        });
-        // Remove banner
-        if (banner.parentNode) {
-          banner.style.opacity = '0';
-          setTimeout(function() {
-            if (banner.parentNode) banner.parentNode.removeChild(banner);
-          }, 300);
-        }
+        // Reload page to see new posts
+        window.location.reload();
       } else {
         window.location.reload();
       }
     });
 
     document.body.insertBefore(banner, document.body.firstChild);
+    console.log('FLA Polling: Banner shown!');
 
     setTimeout(function() {
       if (banner.parentNode) {
