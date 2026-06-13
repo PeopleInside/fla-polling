@@ -1,23 +1,24 @@
 <script>
 /**
  * FLA Polling - Real-time polling for Flarum 2.0
- * Each tab manages its own state, only banner state is shared via localStorage
+ * Final version: Only shows relevant banners per context
  */
 (function() {
   'use strict';
 
   var pollingInterval = 10000;
   var currentDiscussionId = null;
-  var lastSeenDiscussionId = 0;
-  var lastSeenPostId = 0;
+  var baselineDiscussionId = 0;
+  var baselinePostId = 0;
+  var baselineSet = false;
   var lastNotificationCount = 0;
   var initialized = false;
   var errorCount = 0;
   var maxErrors = 5;
-  var currentUrl = window.location.href;
   var bannerDismissed = false;
   var snoozedUntil = 0;
   var bannerShown = false;
+  var lastKnownPath = window.location.pathname;
 
   var translations = {
     en: {
@@ -34,7 +35,7 @@
       new_content: 'Nuovi contenuti disponibili!',
       reload: 'Ricarica',
       snooze: 'Ricordami tra 30s',
-      dismiss: ''
+      dismiss: '✕'
     }
   };
 
@@ -102,45 +103,25 @@
     return 0;
   }
 
-  function updateReferenceValues() {
+  function resetBaseline() {
     currentDiscussionId = getCurrentDiscussionId();
     bannerDismissed = false;
     snoozedUntil = 0;
     bannerShown = false;
+    baselineSet = false;
     
     if (currentDiscussionId) {
-      lastSeenPostId = getLastPostIdFromDOM();
-      lastSeenDiscussionId = 0;
+      // In a discussion: only track post ID
+      baselineDiscussionId = 0;
+      baselinePostId = getLastPostIdFromDOM();
     } else {
-      lastSeenDiscussionId = getLastDiscussionIdFromPage();
-      lastSeenPostId = 0;
+      // In discussion list: track both
+      baselineDiscussionId = getLastDiscussionIdFromPage();
+      baselinePostId = 0;
     }
   }
 
-  function monitorUrlChanges() {
-    window.addEventListener('popstate', function() {
-      if (window.location.href !== currentUrl) {
-        currentUrl = window.location.href;
-        setTimeout(updateReferenceValues, 500);
-      }
-    });
-
-    document.addEventListener('click', function(e) {
-      var target = e.target;
-      while (target && target.tagName !== 'A') {
-        target = target.parentNode;
-      }
-      if (target && target.tagName === 'A' && target.href) {
-        setTimeout(function() {
-          if (window.location.href !== currentUrl) {
-            currentUrl = window.location.href;
-            updateReferenceValues();
-          }
-        }, 500);
-      }
-    });
-
-    // Listen for banner state changes from other tabs
+  function monitorStorage() {
     window.addEventListener('storage', function(e) {
       if (e.key === 'flaPolling_bannerDismissed') {
         bannerDismissed = true;
@@ -159,8 +140,8 @@
     if (initialized) return;
     initialized = true;
 
-    updateReferenceValues();
-    monitorUrlChanges();
+    resetBaseline();
+    monitorStorage();
 
     setInterval(checkForUpdates, pollingInterval);
     checkForUpdates();
@@ -168,8 +149,13 @@
 
   function checkForUpdates() {
     if (errorCount > maxErrors || bannerDismissed || bannerShown) return;
-    
     if (Date.now() < snoozedUntil) return;
+
+    var currentPath = window.location.pathname;
+    if (currentPath !== lastKnownPath) {
+      lastKnownPath = currentPath;
+      resetBaseline();
+    }
 
     var apiUrl = '/api/realtime-check';
     if (currentDiscussionId) {
@@ -203,28 +189,32 @@
       var latestDiscussionId = data.latestDiscussionId || 0;
       var latestPostId = data.latestPostId || 0;
       
+      if (!baselineSet) {
+        baselineSet = true;
+        baselineDiscussionId = latestDiscussionId;
+        baselinePostId = latestPostId;
+        return;
+      }
+      
+      // CORRECT LOGIC: Context-specific checks only
       if (currentDiscussionId) {
-        // In a specific discussion - check for new posts
-        if (latestPostId > lastSeenPostId && lastSeenPostId > 0) {
+        // ONLY check for new posts in this discussion
+        if (latestPostId > baselinePostId) {
           showBanner('post', latestDiscussionId, latestPostId);
           return;
         }
       } else {
-        // In discussion list - check for new discussions AND new posts
-        if (latestDiscussionId > lastSeenDiscussionId && lastSeenDiscussionId > 0) {
+        // Check for new discussions OR new posts globally
+        if (latestDiscussionId > baselineDiscussionId) {
           showBanner('discussion', latestDiscussionId, latestPostId);
           return;
         }
-        if (latestPostId > lastSeenPostId && lastSeenPostId > 0) {
+        if (latestPostId > baselinePostId && baselinePostId > 0) {
           showBanner('content', latestDiscussionId, latestPostId);
           return;
         }
       }
       
-      // Update last seen values
-      lastSeenDiscussionId = latestDiscussionId;
-      lastSeenPostId = latestPostId;
-
       var notificationCount = data.unreadNotifications || 0;
       if (notificationCount !== lastNotificationCount) {
         updateNotificationBadge(notificationCount);
@@ -280,15 +270,20 @@
     banner.querySelector('.FlaPollingBanner-close').addEventListener('click', function() {
       bannerDismissed = true;
       bannerShown = false;
-      lastSeenDiscussionId = latestDiscussionId;
-      lastSeenPostId = latestPostId;
+      baselineDiscussionId = latestDiscussionId;
+      baselinePostId = latestPostId;
       try {
         localStorage.setItem('flaPolling_bannerDismissed', Date.now().toString());
       } catch (e) {}
       removeBanner(banner);
     });
 
-    document.body.insertBefore(banner, document.body.firstChild);
+    var insertAfter = document.querySelector('.WelcomeHero') || document.querySelector('.App-header');
+    if (insertAfter && insertAfter.parentNode) {
+      insertAfter.parentNode.insertBefore(banner, insertAfter.nextSibling);
+    } else {
+      document.body.insertBefore(banner, document.body.firstChild);
+    }
   }
 
   function removeBanner(banner) {
