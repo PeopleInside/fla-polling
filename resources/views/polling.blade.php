@@ -1,94 +1,167 @@
 <script>
 /**
- * FLA Polling - Production-ready real-time polling for Flarum 2.0
- * - SPA-aware (handles Flarum's AJAX routing)
- * - Secure API communication
- * - Contextual detection (discussion list vs single discussion)
+ * FLA Polling - Real-time polling for Flarum 2.0
+ * Detects new discussions AND new posts in current discussion
+ * Reads post IDs from DOM for reliability
  */
 (function() {
   'use strict';
 
   var pollingInterval = 10000;
-  var errorCount = 0;
-  var maxErrors = 5;
-  var initialized = false;
-
-  // State tracking
-  var currentDiscussionId = null;
+  var initialDiscussionId = 0;
+  var initialPostId = 0;
   var lastCheckedDiscussionId = 0;
   var lastCheckedPostId = 0;
+  var currentDiscussionId = null;
   var lastNotificationCount = 0;
+  var initialized = false;
+  var errorCount = 0;
+  var maxErrors = 5;
 
-  // Translations
   var translations = {
     en: {
       new_discussions: 'New discussions available!',
-      new_posts: 'New replies in this discussion!',
+      new_posts: 'New posts in this discussion!',
       reload: 'Reload',
-      scroll: 'Scroll to new replies'
+      scroll: 'Scroll to new posts'
     },
     it: {
       new_discussions: 'Nuove discussioni disponibili!',
-      new_posts: 'Nuove risposte in questa discussione!',
+      new_posts: 'Nuovi messaggi in questa discussione!',
       reload: 'Ricarica',
-      scroll: 'Vai alle nuove risposte'
+      scroll: 'Vai ai nuovi messaggi'
     }
   };
 
   function getTranslation(key) {
     var lang = document.documentElement.lang || 'en';
     if (lang.length > 2) lang = lang.substring(0, 2);
-    return (translations[lang] && translations[lang][key]) || translations['en'][key] || key;
+    if (translations[lang] && translations[lang][key]) {
+      return translations[lang][key];
+    }
+    return translations['en'][key] || key;
+  }
+
+  function waitForApp(callback, attempts) {
+    attempts = attempts || 0;
+    if (attempts > 50) return;
+    if (typeof app !== 'undefined' && app.forum && app.store) {
+      callback();
+    } else {
+      setTimeout(function() {
+        waitForApp(callback, attempts + 1);
+      }, 200);
+    }
   }
 
   /**
-   * Robust SPA-aware discussion ID detector
+   * Extract discussion ID from current URL
    */
   function getCurrentDiscussionId() {
     var path = window.location.pathname;
-    var match = path.match(/^\/d\/(\d+)/);
-    return match ? parseInt(match[1]) : null;
+    var match = path.match(/\/d\/(\d+)/);
+    if (match && match[1]) {
+      return parseInt(match[1]);
+    }
+    return null;
+  }
+
+  /**
+   * Get the last post ID from the DOM (most reliable method)
+   * Flarum renders posts with ID format "Post-123"
+   */
+  function getCurrentPostIdFromDOM() {
+    // Method 1: Look for elements with ID "Post-XXX"
+    var postElements = document.querySelectorAll('[id^="Post-"]');
+    if (postElements.length > 0) {
+      var maxId = 0;
+      postElements.forEach(function(el) {
+        var id = parseInt(el.id.replace('Post-', ''));
+        if (id > maxId) maxId = id;
+      });
+      return maxId;
+    }
+
+    // Method 2: Look for PostStream items with data-id
+    var streamItems = document.querySelectorAll('.PostStream-item[data-id]');
+    if (streamItems.length > 0) {
+      var maxId = 0;
+      streamItems.forEach(function(el) {
+        var id = parseInt(el.getAttribute('data-id'));
+        if (id > maxId) maxId = id;
+      });
+      return maxId;
+    }
+
+    // Method 3: Fallback to Flarum store
+    if (app && app.store && app.store.all('posts')) {
+      var posts = app.store.all('posts');
+      if (posts.length > 0) {
+        return Math.max.apply(null, posts.map(function(p) {
+          return parseInt(p.id());
+        }));
+      }
+    }
+
+    return 0;
   }
 
   function initPolling() {
     if (initialized) return;
     initialized = true;
 
-    // Set initial state
+    // Detect if we're viewing a specific discussion
     currentDiscussionId = getCurrentDiscussionId();
 
-    // Start polling loop
-    setInterval(poll, pollingInterval);
-    poll();
+    if (currentDiscussionId) {
+      // We're in a discussion - track post IDs
+      initialDiscussionId = currentDiscussionId;
+      initialPostId = getCurrentPostIdFromDOM();
+      lastCheckedDiscussionId = currentDiscussionId;
+      lastCheckedPostId = initialPostId;
+    } else {
+      // We're on discussion list - track discussion IDs
+      if (app && app.store && app.store.all('discussions')) {
+        var discussions = app.store.all('discussions');
+        if (discussions.length > 0) {
+          var maxId = Math.max.apply(null, discussions.map(function(d) {
+            return parseInt(d.id());
+          }));
+          initialDiscussionId = maxId;
+          lastCheckedDiscussionId = maxId;
+        }
+      }
+    }
+
+    setInterval(checkForUpdates, pollingInterval);
+    checkForUpdates();
   }
 
-  function poll() {
-    if (errorCount > maxErrors) return;
-
-    // Detect SPA navigation
-    var newDiscussionId = getCurrentDiscussionId();
-    if (newDiscussionId !== currentDiscussionId) {
-      currentDiscussionId = newDiscussionId;
-      lastCheckedPostId = 0; // Reset baseline for new discussion
+  function checkForUpdates() {
+    if (errorCount > maxErrors) {
+      console.warn('FLA Polling: Stopped due to too many errors');
+      return;
     }
 
-    var url = '/api/realtime-check';
+    // Pass discussionId to get specific data
+    var apiUrl = '/api/realtime-check';
     if (currentDiscussionId) {
-      url += '?discussion_id=' + currentDiscussionId;
+      apiUrl += '?discussionId=' + currentDiscussionId;
     }
-
-    fetch(url, {
+    
+    fetch(apiUrl, {
       method: 'GET',
       credentials: 'same-origin',
       headers: {
         'Accept': 'application/json',
-        'X-Requested-With': 'XMLHttpRequest'
+        'X-Requested-With': 'XMLHttpRequest',
+        'X-CSRF-Token': getCsrfToken() || ''
       }
     })
     .then(function(response) {
       if (!response.ok) {
         if (response.status === 401) {
-          errorCount = maxErrors + 1; // Stop polling if logged out
+          errorCount = maxErrors + 1;
           return null;
         }
         throw new Error('HTTP ' + response.status);
@@ -97,37 +170,37 @@
     })
     .then(function(data) {
       if (!data) return;
-
-      errorCount = 0; // Reset on success
+      
+      errorCount = 0;
+      
       if (data.rateLimited) return;
-
-      // Handle new discussions (list view)
-      if (!currentDiscussionId) {
-        var latestDiscId = data.latestDiscussionId || 0;
-        if (latestDiscId > lastCheckedDiscussionId && lastCheckedDiscussionId > 0) {
-          showBanner('discussion');
-        }
-        if (lastCheckedDiscussionId === 0) lastCheckedDiscussionId = latestDiscId;
-        else lastCheckedDiscussionId = latestDiscId;
-      } 
-      // Handle new posts (discussion view)
-      else {
-        var latestPostId = data.latestPostId || 0;
-        if (latestPostId > 0 && latestPostId > lastCheckedPostId) {
-          showBanner('post');
-        }
-        if (lastCheckedPostId === 0) lastCheckedPostId = latestPostId;
-        else lastCheckedPostId = latestPostId;
+      
+      var latestDiscussionId = data.latestDiscussionId || 0;
+      var latestPostId = data.latestPostId || 0;
+      
+      // Check for new discussions (only if not in a specific discussion)
+      if (!currentDiscussionId && 
+          latestDiscussionId > initialDiscussionId && 
+          latestDiscussionId > lastCheckedDiscussionId) {
+        showBanner('discussion');
       }
+      
+      // Check for new posts in current discussion
+      if (currentDiscussionId && latestPostId > lastCheckedPostId) {
+        showBanner('post');
+      }
+      
+      lastCheckedDiscussionId = latestDiscussionId;
+      lastCheckedPostId = latestPostId;
 
-      // Handle notifications
-      var notifCount = data.unreadNotifications || 0;
-      if (notifCount !== lastNotificationCount) {
-        updateNotificationBadge(notifCount);
-        lastNotificationCount = notifCount;
+      // Update notification badge
+      var notificationCount = data.unreadNotifications || 0;
+      if (notificationCount !== lastNotificationCount) {
+        updateNotificationBadge(notificationCount);
+        lastNotificationCount = notificationCount;
       }
     })
-    .catch(function() {
+    .catch(function(error) {
       errorCount++;
     });
   }
@@ -135,23 +208,38 @@
   function showBanner(type) {
     if (document.querySelector('.FlaPollingBanner')) return;
 
-    var text = type === 'post' ? getTranslation('new_posts') : getTranslation('new_discussions');
-    var btnText = type === 'post' ? getTranslation('scroll') : getTranslation('reload');
+    var text, buttonText;
+    if (type === 'post') {
+      text = getTranslation('new_posts');
+      buttonText = getTranslation('scroll');
+    } else {
+      text = getTranslation('new_discussions');
+      buttonText = getTranslation('reload');
+    }
 
     var banner = document.createElement('div');
     banner.className = 'FlaPollingBanner';
     banner.innerHTML = '<div class="FlaPollingBanner-content">' +
-      '<i class="fas fa-info-circle"></i> ' + text + ' ' +
-      '<button class="FlaPollingBanner-reload">' + btnText + '</button>' +
+      '<i class="fas fa-info-circle"></i> ' +
+      text + ' ' +
+      '<button class="FlaPollingBanner-reload">' + buttonText + '</button>' +
       '</div>';
-
-    var btn = banner.querySelector('.FlaPollingBanner-reload');
-    btn.addEventListener('click', function() {
-      if (type === 'post') {
-        // Smooth scroll to bottom for new replies
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
-        banner.style.opacity = '0';
-        setTimeout(function() { if (banner.parentNode) banner.remove(); }, 300);
+    
+    var button = banner.querySelector('.FlaPollingBanner-reload');
+    button.addEventListener('click', function() {
+      if (type === 'post' && currentDiscussionId) {
+        // Scroll to bottom to see new posts
+        window.scrollTo({
+          top: document.body.scrollHeight,
+          behavior: 'smooth'
+        });
+        // Remove banner
+        if (banner.parentNode) {
+          banner.style.opacity = '0';
+          setTimeout(function() {
+            if (banner.parentNode) banner.parentNode.removeChild(banner);
+          }, 300);
+        }
       } else {
         window.location.reload();
       }
@@ -159,35 +247,48 @@
 
     document.body.insertBefore(banner, document.body.firstChild);
 
-    // Auto-hide
     setTimeout(function() {
       if (banner.parentNode) {
         banner.style.opacity = '0';
-        setTimeout(function() { if (banner.parentNode) banner.remove(); }, 300);
+        setTimeout(function() {
+          if (banner.parentNode) banner.parentNode.removeChild(banner);
+        }, 300);
       }
     }, 30000);
   }
 
-  function updateNotificationBadge(count) {
-    var icon = document.querySelector('.NotificationsDropdown .Button-icon');
-    if (!icon) return;
+  function getCsrfToken() {
+    var token = document.querySelector('meta[name="csrf-token"]');
+    if (token) {
+      return token.getAttribute('content');
+    }
+    if (app && app.session) {
+      return app.session.csrfToken;
+    }
+    return null;
+  }
 
-    var oldBadge = icon.parentElement.querySelector('.FlaPollingBadge');
-    if (oldBadge) oldBadge.remove();
+  function updateNotificationBadge(count) {
+    var notificationIcon = document.querySelector('.NotificationsDropdown .Button-icon');
+    if (!notificationIcon) return;
+
+    var existingBadge = notificationIcon.parentElement.querySelector('.FlaPollingBadge');
+    if (existingBadge) existingBadge.parentNode.removeChild(existingBadge);
 
     if (count > 0) {
       var badge = document.createElement('span');
       badge.className = 'FlaPollingBadge';
       badge.textContent = count > 99 ? '99+' : count;
-      icon.parentElement.appendChild(badge);
+      notificationIcon.parentElement.appendChild(badge);
     }
   }
 
-  // Initialize when DOM is ready
   if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', initPolling);
+    document.addEventListener('DOMContentLoaded', function() {
+      waitForApp(initPolling);
+    });
   } else {
-    initPolling();
+    waitForApp(initPolling);
   }
 })();
 </script>
