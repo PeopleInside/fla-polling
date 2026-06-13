@@ -1,13 +1,15 @@
 <script>
 /**
  * FLA Polling - Real-time polling for Flarum 2.0
- * Multi-tab safe with localStorage sync
+ * Each tab manages its own state, only banner state is shared via localStorage
  */
 (function() {
   'use strict';
 
   var pollingInterval = 10000;
   var currentDiscussionId = null;
+  var lastSeenDiscussionId = 0;
+  var lastSeenPostId = 0;
   var lastNotificationCount = 0;
   var initialized = false;
   var errorCount = 0;
@@ -15,12 +17,13 @@
   var currentUrl = window.location.href;
   var bannerDismissed = false;
   var snoozedUntil = 0;
-  var bannerShown = false; // Track if banner is currently shown in this tab
+  var bannerShown = false;
 
   var translations = {
     en: {
       new_discussions: 'New discussions available!',
       new_posts: 'New posts in this discussion!',
+      new_content: 'New content available!',
       reload: 'Reload',
       snooze: 'Remind me in 30s',
       dismiss: '✕'
@@ -28,9 +31,10 @@
     it: {
       new_discussions: 'Nuove discussioni disponibili!',
       new_posts: 'Nuovi messaggi in questa discussione!',
+      new_content: 'Nuovi contenuti disponibili!',
       reload: 'Ricarica',
       snooze: 'Ricordami tra 30s',
-      dismiss: '✕'
+      dismiss: ''
     }
   };
 
@@ -98,37 +102,6 @@
     return 0;
   }
 
-  /**
-   * Get last seen IDs from localStorage (shared across tabs)
-   */
-  function getStoredLastSeenIds() {
-    try {
-      var stored = localStorage.getItem('flaPolling_lastSeen');
-      if (stored) {
-        return JSON.parse(stored);
-      }
-    } catch (e) {
-      // Ignore parse errors
-    }
-    return { discussionId: 0, postId: 0, url: '' };
-  }
-
-  /**
-   * Store last seen IDs in localStorage (shared across tabs)
-   */
-  function storeLastSeenIds(discussionId, postId) {
-    try {
-      localStorage.setItem('flaPolling_lastSeen', JSON.stringify({
-        discussionId: discussionId,
-        postId: postId,
-        url: currentUrl,
-        timestamp: Date.now()
-      }));
-    } catch (e) {
-      // Ignore storage errors
-    }
-  }
-
   function updateReferenceValues() {
     currentDiscussionId = getCurrentDiscussionId();
     bannerDismissed = false;
@@ -136,11 +109,11 @@
     bannerShown = false;
     
     if (currentDiscussionId) {
-      var lastSeenPostId = getLastPostIdFromDOM();
-      storeLastSeenIds(0, lastSeenPostId);
+      lastSeenPostId = getLastPostIdFromDOM();
+      lastSeenDiscussionId = 0;
     } else {
-      var lastSeenDiscussionId = getLastDiscussionIdFromPage();
-      storeLastSeenIds(lastSeenDiscussionId, 0);
+      lastSeenDiscussionId = getLastDiscussionIdFromPage();
+      lastSeenPostId = 0;
     }
   }
 
@@ -167,24 +140,14 @@
       }
     });
 
-    // Listen for storage changes from other tabs
+    // Listen for banner state changes from other tabs
     window.addEventListener('storage', function(e) {
-      if (e.key === 'flaPolling_lastSeen') {
-        // Another tab updated the state, check if we need to update too
-        var stored = getStoredLastSeenIds();
-        if (stored.url !== currentUrl) {
-          // Different page, update our reference values
-          updateReferenceValues();
-        }
-      }
       if (e.key === 'flaPolling_bannerDismissed') {
-        // Another tab dismissed the banner
         bannerDismissed = true;
         var banner = document.querySelector('.FlaPollingBanner');
         if (banner) removeBanner(banner);
       }
       if (e.key === 'flaPolling_bannerSnoozed') {
-        // Another tab snoozed the banner
         snoozedUntil = parseInt(e.newValue) || 0;
         var banner = document.querySelector('.FlaPollingBanner');
         if (banner) removeBanner(banner);
@@ -206,7 +169,6 @@
   function checkForUpdates() {
     if (errorCount > maxErrors || bannerDismissed || bannerShown) return;
     
-    // SNOOZE LOGIC
     if (Date.now() < snoozedUntil) return;
 
     var apiUrl = '/api/realtime-check';
@@ -241,24 +203,27 @@
       var latestDiscussionId = data.latestDiscussionId || 0;
       var latestPostId = data.latestPostId || 0;
       
-      var stored = getStoredLastSeenIds();
-      var lastSeenDiscussionId = stored.discussionId || 0;
-      var lastSeenPostId = stored.postId || 0;
-      
-      // Check for new discussions (only if not in a specific discussion)
-      if (!currentDiscussionId && latestDiscussionId > lastSeenDiscussionId && lastSeenDiscussionId > 0) {
-        showBanner('discussion', latestDiscussionId, latestPostId);
-        return;
+      if (currentDiscussionId) {
+        // In a specific discussion - check for new posts
+        if (latestPostId > lastSeenPostId && lastSeenPostId > 0) {
+          showBanner('post', latestDiscussionId, latestPostId);
+          return;
+        }
+      } else {
+        // In discussion list - check for new discussions AND new posts
+        if (latestDiscussionId > lastSeenDiscussionId && lastSeenDiscussionId > 0) {
+          showBanner('discussion', latestDiscussionId, latestPostId);
+          return;
+        }
+        if (latestPostId > lastSeenPostId && lastSeenPostId > 0) {
+          showBanner('content', latestDiscussionId, latestPostId);
+          return;
+        }
       }
       
-      // Check for new posts in current discussion
-      if (currentDiscussionId && latestPostId > lastSeenPostId && lastSeenPostId > 0) {
-        showBanner('post', latestDiscussionId, latestPostId);
-        return;
-      }
-      
-      // Update stored values ONLY if no banner was shown
-      storeLastSeenIds(latestDiscussionId, latestPostId);
+      // Update last seen values
+      lastSeenDiscussionId = latestDiscussionId;
+      lastSeenPostId = latestPostId;
 
       var notificationCount = data.unreadNotifications || 0;
       if (notificationCount !== lastNotificationCount) {
@@ -276,10 +241,17 @@
 
     bannerShown = true;
 
-    var text = (type === 'post') ? getTranslation('new_posts') : getTranslation('new_discussions');
-    var reloadText = getTranslation('reload');
-    var snoozeText = getTranslation('snooze');
-    var dismissText = getTranslation('dismiss');
+    var text, reloadText, snoozeText, dismissText;
+    if (type === 'post') {
+      text = getTranslation('new_posts');
+    } else if (type === 'content') {
+      text = getTranslation('new_content');
+    } else {
+      text = getTranslation('new_discussions');
+    }
+    reloadText = getTranslation('reload');
+    snoozeText = getTranslation('snooze');
+    dismissText = getTranslation('dismiss');
 
     var banner = document.createElement('div');
     banner.className = 'FlaPollingBanner';
@@ -299,7 +271,6 @@
       var snoozeTime = Date.now() + 30000;
       snoozedUntil = snoozeTime;
       bannerShown = false;
-      // Notify other tabs
       try {
         localStorage.setItem('flaPolling_bannerSnoozed', snoozeTime.toString());
       } catch (e) {}
@@ -309,9 +280,8 @@
     banner.querySelector('.FlaPollingBanner-close').addEventListener('click', function() {
       bannerDismissed = true;
       bannerShown = false;
-      // Update stored values to current latest
-      storeLastSeenIds(latestDiscussionId, latestPostId);
-      // Notify other tabs
+      lastSeenDiscussionId = latestDiscussionId;
+      lastSeenPostId = latestPostId;
       try {
         localStorage.setItem('flaPolling_bannerDismissed', Date.now().toString());
       } catch (e) {}
@@ -319,8 +289,6 @@
     });
 
     document.body.insertBefore(banner, document.body.firstChild);
-
-    // NO auto-hide - banner stays until user interacts
   }
 
   function removeBanner(banner) {
