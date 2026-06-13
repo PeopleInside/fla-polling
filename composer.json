@@ -3,9 +3,11 @@
     "description": "Lightweight real-time polling for Flarum 2.0 - No WebSocket, No SSH required",
     "type": "flarum-extension",
     "license": "MIT",
+    "homepage": "https://github.com/PeopleInside/fla-polling",
     "authors": [
         {
-            "name": "PeopleInside"
+            "name": "PeopleInside",
+            "homepage": "https://github.com/PeopleInside"
         }
     ],
     "require": {
@@ -15,6 +17,10 @@
         "psr-4": {
             "PeopleInside\\FlaPolling\\": "src/"
         }
+    },
+    "support": {
+        "source": "https://github.com/PeopleInside/fla-polling",
+        "issues": "https://github.com/PeopleInside/fla-polling/issues"
     },
     "extra": {
         "flarum-extension": {
