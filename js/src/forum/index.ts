@@ -61,7 +61,7 @@ app.initializers.add('peopleinside-fla-polling', () => {
             // Logged-in user is reading a dedicated, specific discussion
             currentDiscussionId = currentUrlId;
             
-            const discussion = app.current.get('discussion');
+            const discussion = app.current ? app.current.get('discussion') : null;
             // Ensure the active discussion context matches the navigated URL to avoid race conditions during SPA loading
             if (discussion && parseInt(discussion.id() || '0') === currentUrlId) {
                 let maxPostId = 0;
@@ -111,23 +111,18 @@ app.initializers.add('peopleinside-fla-polling', () => {
                 }
             }
 
-            // Important: Also keep track of the maximum post ID loaded in the store or DOM while browsing listings,
-            // to prevent false positives/negatives when checking for new posts on the dashboard lists.
-            let maxPostId = 0;
-            const posts = app.store.all('posts');
-            if (posts.length > 0) {
-                maxPostId = Math.max(...posts.map(p => parseInt(p.id() || '0')).filter(id => !isNaN(id)));
-            }
+            // CRITICAL LOGIC FIX:
+            // Never check app.store.all('posts') globally when on list pages!
+            // When browsing lists, the client store contains older posts from previously visited topics
+            // or notification preloads. This leaks future-state high IDs and silences real-time post updates.
+            // When on listings, we only update baselinePostId if the DOM specifically renders post items.
             const domPostId = getLastPostIdFromDOM();
-            if (domPostId > maxPostId) {
-                maxPostId = domPostId;
-            }
-            if (maxPostId > 0) {
+            if (domPostId > 0) {
                 if (!baselinePostIdSet) {
-                    baselinePostId = maxPostId;
+                    baselinePostId = domPostId;
                     baselinePostIdSet = true;
                 } else {
-                    baselinePostId = Math.max(baselinePostId, maxPostId);
+                    baselinePostId = Math.max(baselinePostId, domPostId);
                 }
             }
         }
@@ -316,6 +311,17 @@ app.initializers.add('peopleinside-fla-polling', () => {
         originalReplace.apply(this, arguments as any);
         onNavigate();
     };
+
+    // High-performance passive path-change check (foolproof fallback for Mithril route-switching edge-cases)
+    const checkRouteChange = () => {
+        const currentPath = window.location.pathname;
+        if (currentPath !== lastKnownPath) {
+            lastKnownPath = currentPath;
+            resetBaseline();
+            checkForUpdates();
+        }
+    };
+    setInterval(checkRouteChange, 500);
 
     // Delay initial checking to keep startup footprint light
     setTimeout(() => {
