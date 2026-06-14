@@ -6,8 +6,11 @@ app.initializers.add('peopleinside-fla-polling', () => {
     if (!app.session.user) return;
 
     let pollingInterval = 10000; // Check every 10 seconds
+    let currentDiscussionId: number | null = null;
     let baselineDiscussionId = 0;
     let baselinePostId = 0;
+    let baselineDiscussionIdSet = false;
+    let baselinePostIdSet = false;
     let firstCheckCompleted = false;
     let lastNotificationCount = 0;
     let errorCount = 0;
@@ -16,37 +19,70 @@ app.initializers.add('peopleinside-fla-polling', () => {
     let lastKnownPath = window.location.pathname;
     let activeAlertId: any = null;
 
-    /**
-     * Resets baselines when switching routes to ensure context-awareness.
-     * Prevents triggering false notifications from older pages.
-     */
+    const getCurrentDiscussionId = () => {
+        const match = window.location.pathname.match(/\/d\/(\d+)/);
+        return match ? parseInt(match[1]) : null;
+    };
+
+    const getLastPostIdFromDOM = () => {
+        const posts = document.querySelectorAll('[id^="Post-"]');
+        if (posts.length > 0) {
+            return Math.max(...Array.from(posts).map(el => parseInt(el.id.replace('Post-', ''))).filter(id => !isNaN(id)));
+        }
+        const items = document.querySelectorAll('.PostStream-item[data-id]');
+        if (items.length > 0) {
+            return Math.max(...Array.from(items).map(el => parseInt(el.getAttribute('data-id') || '0')).filter(id => !isNaN(id)));
+        }
+        return 0;
+    };
+
+    const getLastDiscussionIdFromDOM = () => {
+        const items = document.querySelectorAll('.DiscussionListItem[data-id], li[data-id].DiscussionListItem');
+        if (items.length > 0) {
+            return Math.max(...Array.from(items).map(el => parseInt(el.getAttribute('data-id') || '0')).filter(id => !isNaN(id)));
+        }
+        return 0;
+    };
+
+    const updateBaselinesFromPage = () => {
+        if (currentDiscussionId) {
+            const domPostId = getLastPostIdFromDOM();
+            if (domPostId > 0) {
+                if (!baselinePostIdSet) {
+                    baselinePostId = domPostId;
+                    baselinePostIdSet = true;
+                } else {
+                    baselinePostId = Math.max(baselinePostId, domPostId);
+                }
+            }
+        } else {
+            const domDiscId = getLastDiscussionIdFromDOM();
+            if (domDiscId > 0) {
+                if (!baselineDiscussionIdSet) {
+                    baselineDiscussionId = domDiscId;
+                    baselineDiscussionIdSet = true;
+                } else {
+                    baselineDiscussionId = Math.max(baselineDiscussionId, domDiscId);
+                }
+            }
+        }
+    };
+
     const resetBaseline = () => {
         snoozedUntil = 0;
         firstCheckCompleted = false;
+        baselineDiscussionId = 0;
+        baselinePostId = 0;
+        baselineDiscussionIdSet = false;
+        baselinePostIdSet = false;
         
-        // Dismiss any existing info alerts on page changes
         if (activeAlertId !== null) {
             app.alerts.dismiss(activeAlertId);
             activeAlertId = null;
         }
 
-        // Initialize baseline state from Flarum's memory
-        const currentDiscussion = app.current.get('discussion');
-        if (currentDiscussion) {
-            // Logged-in user is reading a dedicated discussion
-            baselinePostId = parseInt(currentDiscussion.lastPostNumber() || '0');
-            baselineDiscussionId = 0;
-        } else {
-            // Logged-in user is browsing lists or dashboards
-            baselineDiscussionId = 0;
-            baselinePostId = 0;
-            
-            // Collect the maximum discussion ID present in the active local store
-            const discussions = app.store.all('discussions');
-            if (discussions.length > 0) {
-                baselineDiscussionId = Math.max(...discussions.map(d => parseInt(d.id() || '0')));
-            }
-        }
+        currentDiscussionId = getCurrentDiscussionId();
+        updateBaselinesFromPage();
     };
 
     resetBaseline();
@@ -65,14 +101,13 @@ app.initializers.add('peopleinside-fla-polling', () => {
             resetBaseline();
         }
 
-        const currentDiscussion = app.current.get('discussion');
-        const discussionId = currentDiscussion ? currentDiscussion.id() : null;
+        updateBaselinesFromPage();
 
         let apiUrl = app.forum.attribute('apiUrl') || '/api';
         apiUrl += '/realtime-check';
         
-        if (discussionId) {
-            apiUrl += '?discussionId=' + discussionId;
+        if (currentDiscussionId) {
+            apiUrl += '?discussionId=' + currentDiscussionId;
         }
 
         fetch(apiUrl, {
@@ -97,17 +132,21 @@ app.initializers.add('peopleinside-fla-polling', () => {
             if (!data) return;
             errorCount = 0;
 
+            updateBaselinesFromPage();
+
             if (!firstCheckCompleted) {
                 firstCheckCompleted = true;
                 baselineDiscussionId = Math.max(baselineDiscussionId, data.latestDiscussionId || 0);
                 baselinePostId = Math.max(baselinePostId, data.latestPostId || 0);
+                baselineDiscussionIdSet = true;
+                baselinePostIdSet = true;
                 return;
             }
 
             const isNewDisc = data.latestDiscussionId > baselineDiscussionId;
             const isNewPost = data.latestPostId > baselinePostId;
 
-            if (discussionId) {
+            if (currentDiscussionId) {
                 // Inside a discussion: alert user of new posts in this thread
                 if (isNewPost) {
                     baselinePostId = data.latestPostId;
