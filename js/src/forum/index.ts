@@ -1,5 +1,8 @@
 import { extend } from 'flarum/common/extend';
 import app from 'flarum/forum/app';
+import Alert from 'flarum/common/components/Alert';
+import Button from 'flarum/common/components/Button';
+import m from 'flarum/common/mithril';
 
 app.initializers.add('peopleinside-fla-polling', () => {
     // SECURITY: Polling only runs if the user is authenticated
@@ -18,6 +21,43 @@ app.initializers.add('peopleinside-fla-polling', () => {
     let snoozedUntil = 0;
     let lastKnownPath = window.location.pathname;
     let activeAlertId: any = null;
+
+    const showAlert = (type: 'post' | 'discussion' | 'content') => {
+        // If an alert is already active, dismiss it to avoid cluttering the screen
+        if (activeAlertId !== null) {
+            app.alerts.dismiss(activeAlertId);
+            activeAlertId = null;
+        }
+
+        let translationKey = 'fla-polling.forum.banner.new_content';
+        if (type === 'post') {
+            translationKey = 'fla-polling.forum.banner.new_posts';
+        } else if (type === 'discussion') {
+            translationKey = 'fla-polling.forum.banner.new_discussions';
+        }
+
+        activeAlertId = app.alerts.show(Alert, {
+            type: 'info',
+            controls: [
+                m(Button, {
+                    className: 'Button Button--link',
+                    onclick: () => {
+                        window.location.reload();
+                    }
+                }, app.translator.trans('fla-polling.forum.banner.reload')),
+                m(Button, {
+                    className: 'Button Button--link',
+                    onclick: () => {
+                        snoozedUntil = Date.now() + 30000; // Snooze for 30s
+                        if (activeAlertId !== null) {
+                            app.alerts.dismiss(activeAlertId);
+                            activeAlertId = null;
+                        }
+                    }
+                }, app.translator.trans('fla-polling.forum.banner.snooze'))
+            ]
+        }, app.translator.trans(translationKey));
+    };
 
     const getCurrentDiscussionId = () => {
         const match = window.location.pathname.match(/\/d\/(\d+)/);
