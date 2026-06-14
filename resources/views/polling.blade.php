@@ -11,6 +11,7 @@
   var baselineDiscussionId = 0;
   var baselinePostId = 0;
   var baselineSet = false;
+  var firstCheckCompleted = false;
   var lastNotificationCount = 0;
   var initialized = false;
   var errorCount = 0;
@@ -54,12 +55,56 @@
     return 0;
   }
 
+  function getLastDiscussionIdFromDOM() {
+    var items = document.querySelectorAll('.DiscussionListItem[data-id], li[data-id].DiscussionListItem');
+    if (items.length) {
+      return Math.max.apply(null, Array.prototype.map.call(items, function(el) {
+        return parseInt(el.getAttribute('data-id'));
+      }));
+    }
+    var links = document.querySelectorAll('a[href*="/d/"]');
+    var ids = [];
+    for (var i = 0; i < links.length; i++) {
+      var match = links[i].getAttribute('href').match(/\/d\/(\d+)/);
+      if (match) ids.push(parseInt(match[1]));
+    }
+    if (ids.length) return Math.max.apply(null, ids);
+    return 0;
+  }
+
   function getLastDiscussionIdFromPage() {
+    var domId = getLastDiscussionIdFromDOM();
+    if (domId > 0) return domId;
+
     if (app && app.store && app.store.all('discussions')) {
       var discs = app.store.all('discussions');
       if (discs.length) return Math.max.apply(null, discs.map(function(d) { return parseInt(d.id()); }));
     }
     return 0;
+  }
+
+  function updateBaselinesFromPage() {
+    if (currentDiscussionId) {
+      var domPostId = getLastPostIdFromDOM();
+      if (domPostId > 0) {
+        if (!baselineSet) {
+          baselinePostId = domPostId;
+          baselineSet = true;
+        } else {
+          baselinePostId = Math.max(baselinePostId, domPostId);
+        }
+      }
+    } else {
+      var pageDiscId = getLastDiscussionIdFromPage();
+      if (pageDiscId > 0) {
+        if (!baselineSet) {
+          baselineDiscussionId = pageDiscId;
+          baselineSet = true;
+        } else {
+          baselineDiscussionId = Math.max(baselineDiscussionId, pageDiscId);
+        }
+      }
+    }
   }
 
   function setupSelfPostDetection() {
@@ -90,14 +135,17 @@
     currentDiscussionId = getCurrentDiscussionId();
     snoozedUntil = 0;
     baselineSet = false;
+    firstCheckCompleted = false;
     bannerElement = null;
     
     if (currentDiscussionId) {
       baselineDiscussionId = 0;
       baselinePostId = getLastPostIdFromDOM();
+      if (baselinePostId > 0) baselineSet = true;
     } else {
       baselineDiscussionId = getLastDiscussionIdFromPage();
       baselinePostId = 0;
+      if (baselineDiscussionId > 0) baselineSet = true;
     }
   }
 
@@ -138,6 +186,8 @@
       resetBaseline();
     }
 
+    updateBaselinesFromPage();
+
     var apiUrl = '/api/realtime-check';
     if (currentDiscussionId) apiUrl += '?discussionId=' + currentDiscussionId;
     
@@ -160,10 +210,13 @@
       if (!data) return;
       errorCount = 0;
 
-      if (!baselineSet) {
+      updateBaselinesFromPage();
+
+      if (!firstCheckCompleted) {
+        firstCheckCompleted = true;
+        baselineDiscussionId = Math.max(baselineDiscussionId, data.latestDiscussionId || 0);
+        baselinePostId = Math.max(baselinePostId, data.latestPostId || 0);
         baselineSet = true;
-        baselineDiscussionId = data.latestDiscussionId || 0;
-        baselinePostId = data.latestPostId || 0;
         return;
       }
 
