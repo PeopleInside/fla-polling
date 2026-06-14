@@ -1,0 +1,16 @@
+{
+  "name": "peopleinside-fla-polling",
+  "version": "1.2.5",
+  "description": "FLA Polling frontend source code with webpack compiler configuration",
+  "main": "dist/forum.js",
+  "private": true,
+  "scripts": {
+    "dev": "webpack --mode development --watch",
+    "build": "webpack --mode production"
+  },
+  "devDependencies": {
+    "flarum-webpack-config": "^3.0.0",
+    "webpack": "^5.0.0",
+    "webpack-cli": "^5.0.0"
+  }
+}

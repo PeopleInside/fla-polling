@@ -19,21 +19,11 @@ return [
     (new Extend\Routes('api'))
         ->get('/realtime-check', 'realtime.check', RealTimeCheckController::class),
     
-    // Inject CSS into the forum frontend
+    // Inject CSS and Compiled JS into the forum frontend natively
     (new Extend\Frontend('forum'))
+        ->js(__DIR__.'/js/dist/forum.js')
         ->css(__DIR__.'/resources/less/extension.less'),
     
     // Load language translations
     (new Extend\Locales(__DIR__.'/locale')),
-    
-    // Register view namespace
-    (new Extend\View())
-        ->namespace('fla-polling', __DIR__.'/resources/views'),
-    
-    // Inject the inline JavaScript into the forum body
-    (new Extend\Frontend('forum'))
-        ->content(function (\Flarum\Frontend\Document $document) {
-            $view = resolve('view');
-            $document->head[] = $view->make('fla-polling::polling')->render();
-        }),
 ];

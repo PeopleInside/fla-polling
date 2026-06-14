@@ -2,6 +2,9 @@ fla-polling:
   forum:
     banner:
       new_discussions: "New discussions available!"
+      new_posts: "New posts in this discussion!"
+      new_content: "New content available!"
       reload: "Reload"
+      snooze: "Remind me in 30s"
     notification:
       new_notifications: "You have new notifications"
