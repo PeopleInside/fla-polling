@@ -1,7 +1,3 @@
-/*
- * FLA Polling - Compiled Production Bundle
- * Registered into Flarum's SystemJS registry.
- */
 System.register("peopleinside/fla-polling/forum", ["flarum/common/extend", "flarum/forum/app"], function (_export, _context) {
   "use strict";
 
@@ -14,6 +10,7 @@ System.register("peopleinside/fla-polling/forum", ["flarum/common/extend", "flar
     }],
     execute: function () {
       app.initializers.add('peopleinside-fla-polling', function () {
+        // SECURITY: Polling only runs if the user is authenticated
         if (!app.session.user) return;
 
         var pollingInterval = 10000;
