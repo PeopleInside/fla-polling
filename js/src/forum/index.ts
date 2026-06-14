@@ -24,6 +24,9 @@ app.initializers.add('peopleinside-fla-polling', () => {
         return match ? parseInt(match[1]) : null;
     };
 
+    /**
+     * Extracts the maximum post ID currently present on the page via the DOM
+     */
     const getLastPostIdFromDOM = () => {
         const posts = document.querySelectorAll('[id^="Post-"]');
         if (posts.length > 0) {
@@ -36,6 +39,9 @@ app.initializers.add('peopleinside-fla-polling', () => {
         return 0;
     };
 
+    /**
+     * Extracts the maximum discussion ID currently present on the page via the DOM
+     */
     const getLastDiscussionIdFromDOM = () => {
         const items = document.querySelectorAll('.DiscussionListItem[data-id], li[data-id].DiscussionListItem');
         if (items.length > 0) {
@@ -44,35 +50,43 @@ app.initializers.add('peopleinside-fla-polling', () => {
         return 0;
     };
 
+    /**
+     * Collects and updates current frontend baselines based on what is loaded on the page.
+     * Keeps cross-page data strictly separate to prevent route pollution.
+     */
     const updateBaselinesFromPage = () => {
-        const discussion = app.current.get('discussion');
-        if (discussion) {
-            // Logged-in user is reading a dedicated discussion
-            currentDiscussionId = parseInt(discussion.id() || '0') || null;
-            
-            // Try fetching loaded post IDs natively from the discussion model
-            let maxPostId = 0;
-            const postIds = discussion.postIds ? discussion.postIds() : [];
-            if (postIds && postIds.length > 0) {
-                maxPostId = Math.max(...postIds.map(id => parseInt(id)).filter(id => !isNaN(id)));
-            }
-            
-            // Fallback: Scraping visible DOM posts
-            const domPostId = getLastPostIdFromDOM();
-            if (domPostId > maxPostId) {
-                maxPostId = domPostId;
-            }
+        const currentUrlId = getCurrentDiscussionId();
 
-            if (maxPostId > 0) {
-                if (!baselinePostIdSet) {
-                    baselinePostId = maxPostId;
-                    baselinePostIdSet = true;
-                } else {
-                    baselinePostId = Math.max(baselinePostId, maxPostId);
+        if (currentUrlId !== null) {
+            // Logged-in user is reading a dedicated, specific discussion
+            currentDiscussionId = currentUrlId;
+            
+            const discussion = app.current.get('discussion');
+            // Ensure the active discussion context matches the navigated URL to avoid race conditions during SPA loading
+            if (discussion && parseInt(discussion.id() || '0') === currentUrlId) {
+                let maxPostId = 0;
+                const postIds = discussion.postIds ? discussion.postIds() : [];
+                if (postIds && postIds.length > 0) {
+                    maxPostId = Math.max(...postIds.map(id => parseInt(id)).filter(id => !isNaN(id)));
+                }
+                
+                // Fallback: Scraping visible DOM posts
+                const domPostId = getLastPostIdFromDOM();
+                if (domPostId > maxPostId) {
+                    maxPostId = domPostId;
+                }
+
+                if (maxPostId > 0) {
+                    if (!baselinePostIdSet) {
+                        baselinePostId = maxPostId;
+                        baselinePostIdSet = true;
+                    } else {
+                        baselinePostId = Math.max(baselinePostId, maxPostId);
+                    }
                 }
             }
         } else {
-            // Logged-in user is browsing lists or dashboards
+            // Logged-in user is browsing discussion lists (All Discussions, tags, etc.)
             currentDiscussionId = null;
             
             // Collect the maximum discussion ID present in Flarum's global client store
@@ -96,16 +110,42 @@ app.initializers.add('peopleinside-fla-polling', () => {
                     baselineDiscussionId = Math.max(baselineDiscussionId, maxDiscId);
                 }
             }
+
+            // Important: Also keep track of the maximum post ID loaded in the store or DOM while browsing listings,
+            // to prevent false positives/negatives when checking for new posts on the dashboard lists.
+            let maxPostId = 0;
+            const posts = app.store.all('posts');
+            if (posts.length > 0) {
+                maxPostId = Math.max(...posts.map(p => parseInt(p.id() || '0')).filter(id => !isNaN(id)));
+            }
+            const domPostId = getLastPostIdFromDOM();
+            if (domPostId > maxPostId) {
+                maxPostId = domPostId;
+            }
+            if (maxPostId > 0) {
+                if (!baselinePostIdSet) {
+                    baselinePostId = maxPostId;
+                    baselinePostIdSet = true;
+                } else {
+                    baselinePostId = Math.max(baselinePostId, maxPostId);
+                }
+            }
         }
     };
 
+    /**
+     * Resets absolute baselines every time the route changes.
+     * Guarantees old baseline numbers never carry over to new routes.
+     */
     const resetBaseline = () => {
         snoozedUntil = 0;
-        // Keep firstCheckCompleted = true if it was already configured during SPA route changes
-        // to prevent ignoring updates upon tag navigation
+        firstCheckCompleted = false; // Reset firstCheckCompleted to establish clean initial thresholds from the DB
+        baselineDiscussionId = 0;
+        baselinePostId = 0;
         baselineDiscussionIdSet = false;
         baselinePostIdSet = false;
         
+        // Dismiss preexisting alerts from the previous route
         if (activeAlertId !== null) {
             app.alerts.dismiss(activeAlertId);
             activeAlertId = null;
@@ -115,7 +155,7 @@ app.initializers.add('peopleinside-fla-polling', () => {
         updateBaselinesFromPage();
     };
 
-    // Self post detection helpers
+    // Self post detection listeners
     const setupSelfPostDetection = () => {
         document.addEventListener('submit', (e) => {
             const target = e.target as HTMLElement;
@@ -131,6 +171,9 @@ app.initializers.add('peopleinside-fla-polling', () => {
         });
     };
 
+    /**
+     * Checks if the user is writing or creating content themselves to suppress redundant popups
+     */
     const checkAndClearSelfPostFlag = () => {
         try {
             const ts = parseInt(sessionStorage.getItem('flaPolling_selfPostTs') || '0');
@@ -153,13 +196,6 @@ app.initializers.add('peopleinside-fla-polling', () => {
         if (errorCount > maxErrors) return;
         if (Date.now() < snoozedUntil) return;
 
-        // Route transition track (Flarum handles content updates in-app via SPA)
-        const currentPath = window.location.pathname;
-        if (currentPath !== lastKnownPath) {
-            lastKnownPath = currentPath;
-            resetBaseline();
-        }
-
         updateBaselinesFromPage();
 
         let apiUrl = app.forum.attribute('apiUrl') || '/api';
@@ -180,7 +216,7 @@ app.initializers.add('peopleinside-fla-polling', () => {
         .then(response => {
             if (!response.ok) {
                 if (response.status === 401 || response.status === 429) {
-                    errorCount = maxErrors + 1; // Terminate poller
+                    errorCount = maxErrors + 1; // Unauthorize or heavy limit: stop polling
                     return null;
                 }
                 throw new Error('HTTP status ' + response.status);
@@ -193,6 +229,7 @@ app.initializers.add('peopleinside-fla-polling', () => {
 
             updateBaselinesFromPage();
 
+            // Establish fresh baselines on the initial payload or route change payload
             if (!firstCheckCompleted) {
                 firstCheckCompleted = true;
                 baselineDiscussionId = Math.max(baselineDiscussionId, data.latestDiscussionId || 0);
@@ -207,7 +244,7 @@ app.initializers.add('peopleinside-fla-polling', () => {
             const isSelf = checkAndClearSelfPostFlag();
 
             if (currentDiscussionId) {
-                // Inside a discussion: alert user of new posts in this thread
+                // Inside a dedicated discussion: alert user of new replies in this thread
                 if (isNewPost) {
                     if (isSelf) {
                         baselinePostId = data.latestPostId;
@@ -217,7 +254,7 @@ app.initializers.add('peopleinside-fla-polling', () => {
                     showAlert('post');
                 }
             } else {
-                // In main lists: alert of new topics, or generalized activity updates
+                // In main lists: alert of new topics, or other posts on the forum
                 if (isNewDisc) {
                     if (isSelf) {
                         baselineDiscussionId = data.latestDiscussionId;
@@ -244,7 +281,7 @@ app.initializers.add('peopleinside-fla-polling', () => {
                 app.session.user.pushAttributes({
                     unreadNotificationCount: count
                 });
-                m.redraw(); // Trigger Flarum's UI to load the native unread badge
+                m.redraw(); // Trigger Flarum/Mithril native redraw for unread badge
             }
         })
         .catch(() => {
@@ -253,48 +290,31 @@ app.initializers.add('peopleinside-fla-polling', () => {
     };
 
     /**
-     * Renders a native, theme-aligned Flarum alert bar with custom controls
+     * SPA Page change-listener and immediate updater.
      */
-    const showAlert = (type: 'post' | 'discussion' | 'content') => {
-        if (activeAlertId !== null) return;
-
-        let messageKey = '';
-        if (type === 'post') {
-            messageKey = 'fla-polling.forum.banner.new_posts';
-        } else if (type === 'content') {
-            messageKey = 'fla-polling.forum.banner.new_content';
-        } else {
-            messageKey = 'fla-polling.forum.banner.new_discussions';
+    const onNavigate = () => {
+        const currentPath = window.location.pathname;
+        if (currentPath !== lastKnownPath) {
+            lastKnownPath = currentPath;
+            resetBaseline();
+            // Instantly poll on navigation to get a fresh threshold baseline
+            checkForUpdates();
         }
+    };
 
-        const message = app.translator.trans(messageKey) || 'New content available!';
+    // SPA routing observers
+    window.addEventListener('popstate', onNavigate);
 
-        // Use Flarum's native alerts model to show the bar beautifully
-        activeAlertId = app.alerts.show(
-            {
-                type: 'info',
-                controls: [
-                    m('button', {
-                        className: 'Button Button--link',
-                        onclick: () => window.location.reload()
-                    }, app.translator.trans('fla-polling.forum.banner.reload') || 'Reload'),
-                    m('button', {
-                        className: 'Button Button--link',
-                        onclick: () => {
-                            snoozedUntil = Date.now() + 30000; // Snooze for 30s
-                            if (activeAlertId !== null) {
-                                app.alerts.dismiss(activeAlertId);
-                                activeAlertId = null;
-                            }
-                        }
-                    }, app.translator.trans('fla-polling.forum.banner.snooze') || 'Snooze')
-                ],
-                ondismiss: () => {
-                    activeAlertId = null;
-                }
-            },
-            message
-        );
+    const originalPush = history.pushState;
+    history.pushState = function() {
+        originalPush.apply(this, arguments as any);
+        onNavigate();
+    };
+
+    const originalReplace = history.replaceState;
+    history.replaceState = function() {
+        originalReplace.apply(this, arguments as any);
+        onNavigate();
     };
 
     // Delay initial checking to keep startup footprint light
