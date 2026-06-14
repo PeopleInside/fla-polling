@@ -45,24 +45,55 @@ app.initializers.add('peopleinside-fla-polling', () => {
     };
 
     const updateBaselinesFromPage = () => {
-        if (currentDiscussionId) {
+        const discussion = app.current.get('discussion');
+        if (discussion) {
+            // Logged-in user is reading a dedicated discussion
+            currentDiscussionId = parseInt(discussion.id() || '0') || null;
+            
+            // Try fetching loaded post IDs natively from the discussion model
+            let maxPostId = 0;
+            const postIds = discussion.postIds ? discussion.postIds() : [];
+            if (postIds && postIds.length > 0) {
+                maxPostId = Math.max(...postIds.map(id => parseInt(id)).filter(id => !isNaN(id)));
+            }
+            
+            // Fallback: Scraping visible DOM posts
             const domPostId = getLastPostIdFromDOM();
-            if (domPostId > 0) {
+            if (domPostId > maxPostId) {
+                maxPostId = domPostId;
+            }
+
+            if (maxPostId > 0) {
                 if (!baselinePostIdSet) {
-                    baselinePostId = domPostId;
+                    baselinePostId = maxPostId;
                     baselinePostIdSet = true;
                 } else {
-                    baselinePostId = Math.max(baselinePostId, domPostId);
+                    baselinePostId = Math.max(baselinePostId, maxPostId);
                 }
             }
         } else {
+            // Logged-in user is browsing lists or dashboards
+            currentDiscussionId = null;
+            
+            // Collect the maximum discussion ID present in Flarum's global client store
+            let maxDiscId = 0;
+            const discussions = app.store.all('discussions');
+            if (discussions.length > 0) {
+                maxDiscId = Math.max(...discussions.map(d => parseInt(d.id() || '0')).filter(id => !isNaN(id)));
+            }
+            
+            // Fallback: Scraping visible list DOM
             const domDiscId = getLastDiscussionIdFromDOM();
-            if (domDiscId > 0) {
+            if (domDiscId > maxDiscId) {
+                maxDiscId = domDiscId;
+            }
+
+            if (maxDiscId > 0) {
                 if (!baselineDiscussionIdSet) {
-                    baselineDiscussionId = domDiscId;
+                    baselineDiscussionId = maxDiscId;
                     baselineDiscussionIdSet = true;
                 } else {
-                    baselineDiscussionId = Math.max(baselineDiscussionId, domDiscId);
+                    baselineDiscussionId = Math.max(baselineDiscussionId, maxDiscId);
                 }
             }
         }
@@ -70,9 +101,8 @@ app.initializers.add('peopleinside-fla-polling', () => {
 
     const resetBaseline = () => {
         snoozedUntil = 0;
-        firstCheckCompleted = false;
-        baselineDiscussionId = 0;
-        baselinePostId = 0;
+        // Keep firstCheckCompleted = true if it was already configured during SPA route changes
+        // to prevent ignoring updates upon tag navigation
         baselineDiscussionIdSet = false;
         baselinePostIdSet = false;
         
@@ -85,7 +115,36 @@ app.initializers.add('peopleinside-fla-polling', () => {
         updateBaselinesFromPage();
     };
 
+    // Self post detection helpers
+    const setupSelfPostDetection = () => {
+        document.addEventListener('submit', (e) => {
+            const target = e.target as HTMLElement;
+            if (target && target.matches && target.matches('.Composer form')) {
+                try { sessionStorage.setItem('flaPolling_selfPostTs', Date.now().toString()); } catch (_) {}
+            }
+        });
+        document.addEventListener('click', (e) => {
+            const target = e.target as HTMLElement;
+            if (target && target.closest && target.closest('.Composer .Button--primary')) {
+                try { sessionStorage.setItem('flaPolling_selfPostTs', Date.now().toString()); } catch (_) {}
+            }
+        });
+    };
+
+    const checkAndClearSelfPostFlag = () => {
+        try {
+            const ts = parseInt(sessionStorage.getItem('flaPolling_selfPostTs') || '0');
+            if (ts > 0 && (Date.now() - ts) < 25000) {
+                sessionStorage.removeItem('flaPolling_selfPostTs');
+                return true;
+            }
+        } catch (_) {}
+        return false;
+    };
+
+    // Initialize baseline state
     resetBaseline();
+    setupSelfPostDetection();
 
     /**
      * Periodically queries the optimized real-time endpoint for new data
@@ -94,7 +153,7 @@ app.initializers.add('peopleinside-fla-polling', () => {
         if (errorCount > maxErrors) return;
         if (Date.now() < snoozedUntil) return;
 
-        // Reset if route transition occurred (Flarum handles content updates in-app via SPA)
+        // Route transition track (Flarum handles content updates in-app via SPA)
         const currentPath = window.location.pathname;
         if (currentPath !== lastKnownPath) {
             lastKnownPath = currentPath;
@@ -145,20 +204,34 @@ app.initializers.add('peopleinside-fla-polling', () => {
 
             const isNewDisc = data.latestDiscussionId > baselineDiscussionId;
             const isNewPost = data.latestPostId > baselinePostId;
+            const isSelf = checkAndClearSelfPostFlag();
 
             if (currentDiscussionId) {
                 // Inside a discussion: alert user of new posts in this thread
                 if (isNewPost) {
+                    if (isSelf) {
+                        baselinePostId = data.latestPostId;
+                        return;
+                    }
                     baselinePostId = data.latestPostId;
                     showAlert('post');
                 }
             } else {
                 // In main lists: alert of new topics, or generalized activity updates
                 if (isNewDisc) {
+                    if (isSelf) {
+                        baselineDiscussionId = data.latestDiscussionId;
+                        baselinePostId = data.latestPostId;
+                        return;
+                    }
                     baselineDiscussionId = data.latestDiscussionId;
                     baselinePostId = data.latestPostId;
                     showAlert('discussion');
                 } else if (isNewPost) {
+                    if (isSelf) {
+                        baselinePostId = data.latestPostId;
+                        return;
+                    }
                     baselinePostId = data.latestPostId;
                     showAlert('content');
                 }
